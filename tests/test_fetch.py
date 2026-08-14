@@ -351,8 +351,11 @@ def test_falls_back_to_the_clip_id_when_the_view_has_no_date_for_it(granicus):
     assert name == "BOS Rules Committee-42000.mp4"
 
 
-def test_an_unreachable_listing_yields_no_date_rather_than_raising():
+def test_an_unreachable_listing_yields_no_date_rather_than_raising(monkeypatch):
     # The date is a nicety. Failing to find it must never stop a download.
+    # No retries here: this failure is the point, so waiting out the backoff
+    # would only make the suite slow.
+    monkeypatch.setattr(fetch, "SESSION", fetch.build_session(attempts=0))
     assert fetch._recording_date(
         "http://127.0.0.1:9/player/clip/42000", "13", "42000") is None
 
@@ -536,8 +539,9 @@ def test_meeting_size_reports_length_and_bytes(granicus):
     assert (seconds, total_bytes) == (3.5, 5000)
 
 
-def test_meeting_size_gives_up_quietly_when_it_cannot_measure():
+def test_meeting_size_gives_up_quietly_when_it_cannot_measure(monkeypatch):
     # Estimating is a nicety; failing to must not stop anything.
+    monkeypatch.setattr(fetch, "SESSION", fetch.build_session(attempts=0))
     assert fetch.meeting_size("http://127.0.0.1:9/video.mp4",
                               playlist="#EXTINF:2.0,\na.ts\n") == (None, None)
 
@@ -780,3 +784,31 @@ def test_the_picker_leaves_an_existing_cursor_setting_alone(monkeypatch):
     fetch.choose_chapters([(0, 10, 100, "an item")])
 
     assert os.environ["PROMPT_TOOLKIT_NO_CPR"] == "0"
+
+
+def test_build_session_is_wired_for_reuse_and_retries():
+    # Retrying and backing off is urllib3's job; that it is switched on for
+    # both schemes, with our User-Agent, is ours.
+    session = fetch.build_session()
+
+    assert session.headers["User-Agent"] == fetch.USER_AGENT
+    for scheme in ("https://example.invalid/", "http://example.invalid/"):
+        adapter = session.get_adapter(scheme)
+        assert adapter.max_retries.total == fetch.RETRY_ATTEMPTS
+
+
+def test_network_reason_says_what_happened_in_a_line():
+    assert fetch._network_reason(
+        requests.exceptions.ConnectionError("...")) == \
+        "could not reach the server"
+    assert fetch._network_reason(
+        requests.exceptions.Timeout("...")) == \
+        "the server did not respond in time"
+
+
+def test_network_reason_reports_a_status_when_there_is_one():
+    response = requests.Response()
+    response.status_code = 503
+    error = requests.HTTPError("boom", response=response)
+
+    assert fetch._network_reason(error) == "the server answered 503"

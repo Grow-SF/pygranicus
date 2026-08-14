@@ -54,6 +54,15 @@ STREAM_HOST = 'https://archive-stream.granicus.com'
 SEGMENT_DURATION_RE = re.compile(r'#EXTINF:([\d.]+)')
 PLAYLIST_TIMEOUT = 60
 
+# A download is thousands of small requests. Without a shared session each one
+# opens a connection and resolves the host again, which is enough to make a
+# resolver fail intermittently; and without retries one such blip ends the
+# download. Both are configured once here.
+RETRY_ATTEMPTS = 5
+RETRY_BACKOFF = 0.5
+RETRY_ON_STATUS = (429, 500, 502, 503, 504)
+CONNECTION_POOL = 32
+
 # Player pages mark each agenda item with an "index point" carrying the second
 # it starts at. They are the chapters offered by --chapters.
 INDEX_POINT_RE = re.compile(r'<div([^>]*index-point[^>]*)>(.*?)</div>', re.S)
@@ -86,17 +95,17 @@ def is_media_url(url):
 
 def fetch_page(url):
     """Read a page once, so its callers can share the one copy."""
-    response = requests.get(url, headers={"User-Agent": USER_AGENT},
-                            timeout=LISTING_TIMEOUT)
+    response = SESSION.get(url, headers={"User-Agent": USER_AGENT},
+                           timeout=LISTING_TIMEOUT)
     response.raise_for_status()
     return response.text
 
 
 def fetch_playlist(video_url):
     """Read the stream's segment playlist."""
-    response = requests.get(chunklist_url(video_url),
-                            headers={"User-Agent": USER_AGENT},
-                            timeout=PLAYLIST_TIMEOUT)
+    response = SESSION.get(chunklist_url(video_url),
+                           headers={"User-Agent": USER_AGENT},
+                           timeout=PLAYLIST_TIMEOUT)
     response.raise_for_status()
     return response.text
 
@@ -212,8 +221,8 @@ def meeting_size(video_url, playlist=None):
     than the download.
     """
     try:
-        head = requests.head(video_url, headers={"User-Agent": USER_AGENT},
-                             timeout=LISTING_TIMEOUT)
+        head = SESSION.head(video_url, headers={"User-Agent": USER_AGENT},
+                            timeout=LISTING_TIMEOUT)
         head.raise_for_status()
         total_bytes = int(head.headers["Content-Length"])
         if playlist is None:
@@ -300,7 +309,7 @@ def select_segments(playlist, playlist_url, start, end):
 
 def download_segment(url, i, num_segments, verbose, progress=None):
     """Download one stream segment whole."""
-    response = requests.get(url, headers={"User-Agent": USER_AGENT})
+    response = SESSION.get(url, headers={"User-Agent": USER_AGENT})
     response.raise_for_status()
     if verbose:
         _log(f'Downloaded segment {i} of {num_segments}', progress)
@@ -363,8 +372,8 @@ def _recording_date(page_url, view_id, clip_id):
     listing = (f'{parts.scheme}://{parts.netloc}'
                f'/ViewPublisher.php?view_id={view_id}')
     try:
-        response = requests.get(listing, headers={"User-Agent": USER_AGENT},
-                                timeout=LISTING_TIMEOUT)
+        response = SESSION.get(listing, headers={"User-Agent": USER_AGENT},
+                               timeout=LISTING_TIMEOUT)
         response.raise_for_status()
     except requests.RequestException:
         return None
@@ -429,6 +438,25 @@ def _log(message, progress=None):
         tqdm.write(message, file=progress.fp)
 
 
+def build_session(pool_size=CONNECTION_POOL, attempts=RETRY_ATTEMPTS):
+    """A session that reuses connections and rides out transient failures."""
+    session = requests.Session()
+    session.headers['User-Agent'] = USER_AGENT
+    retries = requests.adapters.Retry(
+        total=attempts, backoff_factor=RETRY_BACKOFF,
+        status_forcelist=RETRY_ON_STATUS,
+        allowed_methods=('GET', 'HEAD'))
+    adapter = requests.adapters.HTTPAdapter(
+        max_retries=retries, pool_connections=pool_size,
+        pool_maxsize=pool_size)
+    session.mount('https://', adapter)
+    session.mount('http://', adapter)
+    return session
+
+
+SESSION = build_session()
+
+
 class Node:
     def __init__(self, chunk_id, data=None, next=None):
         self.data = data
@@ -443,7 +471,7 @@ def download_chunk(url, start, end, i, num_chunks, verbose, progress=None,
     Note that i and num_chunks are only needed for verbose output
     """
     headers = {"Range": f"bytes={start}-{end}", "User-Agent": USER_AGENT}
-    response = requests.get(url, headers=headers, stream=True)
+    response = SESSION.get(url, headers=headers, stream=True)
     # Without this a rejected chunk writes the error page into the video file
     response.raise_for_status()
     if verbose:
@@ -480,7 +508,7 @@ def download_video(url, chunk_size, num_threads, output_file, verbose=False,
     try:
         with concurrent.futures.ThreadPoolExecutor(
                 max_workers=num_threads) as executor:
-            response = requests.head(url, headers={"User-Agent": USER_AGENT})
+            response = SESSION.head(url, headers={"User-Agent": USER_AGENT})
             # A rejected HEAD still carries a Content-Length (of the error
             # page), which would otherwise be mistaken for the size of the
             # video.
@@ -572,6 +600,18 @@ def download_range(url, start, end, num_threads, output_file, verbose=False,
     return stream_file
 
 
+def _network_reason(error):
+    """Say what went wrong in a line, rather than in a stack of causes."""
+    if isinstance(error, requests.exceptions.Timeout):
+        return 'the server did not respond in time'
+    if isinstance(error, requests.exceptions.ConnectionError):
+        return 'could not reach the server'
+    response = getattr(error, 'response', None)
+    if response is not None:
+        return f'the server answered {response.status_code}'
+    return str(error) or error.__class__.__name__
+
+
 def main():
     parser = argparse.ArgumentParser(
         description='Download video file from url in parallel')
@@ -630,17 +670,28 @@ def main():
         if not picked:
             raise SystemExit("Nothing selected; nothing downloaded")
         ranges = chapter_ranges(chapters)
+        failed = []
         try:
             for index in picked:
                 chapter_start, chapter_end, title = ranges[index]
-                written = download_range(
-                    url, chapter_start, chapter_end, num_threads,
-                    chapter_filename(output_file, title), verbose,
-                    progress_sink=progress_sink, playlist=playlist)
+                try:
+                    written = download_range(
+                        url, chapter_start, chapter_end, num_threads,
+                        chapter_filename(output_file, title), verbose,
+                        progress_sink=progress_sink, playlist=playlist)
+                except requests.RequestException as error:
+                    # One chapter failing is no reason to abandon the rest.
+                    failed.append(title)
+                    print(f'Could not download {title}: '
+                          f'{_network_reason(error)}', file=sys.stderr)
+                    continue
                 print(f'Wrote {written}', file=sys.stderr)
         except KeyboardInterrupt:
             print("\nInterrupted.", file=sys.stderr)
             raise SystemExit(130)
+        if failed:
+            raise SystemExit(f'{len(failed)} of {len(picked)} could not be '
+                             f'downloaded')
         return
 
     try:
@@ -662,6 +713,10 @@ def main():
         print(f"\nInterrupted. Partial download left at {output_file}",
               file=sys.stderr)
         raise SystemExit(130)
+    except requests.RequestException as error:
+        # A network fault is not a crash; say what happened in a line.
+        raise SystemExit(f'Download failed: {_network_reason(error)}. '
+                         f'Partial download left at {output_file}')
 
 
 if __name__ == '__main__':
