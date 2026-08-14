@@ -11,6 +11,7 @@ from conftest import ERROR_PAGE
 # fast; the production default of 32 MiB is exercised only by the size math.
 CHUNK = 8192
 REQUESTS_DEFAULT_UA = "python-requests"
+BLOCKED_UA_PREFIX = fetch.USER_AGENT.split("/")[0]
 
 
 def test_head_request_sends_the_configured_user_agent(
@@ -44,7 +45,8 @@ def test_rejected_head_raises_http_error_not_index_error(
     # A 403 error page carries its own Content-Length. Read as a video size it
     # yields zero chunks and an IndexError from the chunk math, which is what
     # this download used to fail with.
-    server = granicus(payload(50_000), blocked_ua_prefixes=("Mozilla",))
+    server = granicus(payload(50_000), blocked_ua_prefixes=(BLOCKED_UA_PREFIX,),
+                      blocked_methods=("HEAD",))
 
     with pytest.raises(requests.HTTPError):
         fetch.download_video(server.url, CHUNK, 4, str(tmp_path / "out.mp4"))
@@ -53,7 +55,7 @@ def test_rejected_head_raises_http_error_not_index_error(
 def test_rejected_chunk_never_writes_the_error_page_to_the_output(
         tmp_path, granicus, payload):
     # HEAD succeeds, so the size is right, but every chunk is rejected.
-    server = granicus(payload(50_000), blocked_ua_prefixes=("Mozilla",),
+    server = granicus(payload(50_000), blocked_ua_prefixes=(BLOCKED_UA_PREFIX,),
                       blocked_methods=("GET",))
     out = tmp_path / "out.mp4"
 
