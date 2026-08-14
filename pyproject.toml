@@ -14,7 +14,10 @@ Homepage = "https://github.com/Grow-SF/pygranicus"
 pygranicus = "pygranicus.fetch:main"
 
 [dependency-groups]
-dev = ["autopep8", "ipython"]
+dev = ["autopep8", "ipython", "pytest"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
 
 [build-system]
 requires = ["hatchling"]
