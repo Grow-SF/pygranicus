@@ -1,6 +1,6 @@
 [project]
 name = "pygranicus"
-version = "1.1.0"
+version = "1.2.0"
 description = "Download Granicus video files efficiently"
 readme = "README.md"
 requires-python = ">=3.10"
