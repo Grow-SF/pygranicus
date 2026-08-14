@@ -91,7 +91,7 @@ def test_reassembles_chunks_in_order_when_completion_is_out_of_order(
     # The first chunk finishes last. The linked list of futures exists exactly
     # so the output order still follows the file, not the completion order.
     data = payload(50_000)
-    server = granicus(data, delay_ranges={0: 0.5})
+    server = granicus(data, delay_ranges={0: 0.15})
     out = tmp_path / "out.mp4"
 
     fetch.download_video(server.url, CHUNK, 4, str(out))
@@ -244,8 +244,8 @@ def test_interrupt_stops_the_download_promptly(tmp_path, granicus, payload):
     # runs this, so os.kill on ourselves is a faithful stand-in for Ctrl-C.
     size = CHUNK * 20
     server = granicus(payload(size),
-                      delay_ranges={i * CHUNK: 0.5 for i in range(20)})
-    interrupt = threading.Timer(0.3, os.kill, (os.getpid(), signal.SIGINT))
+                      delay_ranges={i * CHUNK: 0.2 for i in range(20)})
+    interrupt = threading.Timer(0.1, os.kill, (os.getpid(), signal.SIGINT))
     interrupt.start()
     started = time.monotonic()
     try:
@@ -435,7 +435,7 @@ def test_downloads_segments_in_order(tmp_path, granicus):
     # follow the playlist order, not the completion order.
     server = granicus(b"", segment_bodies={
         "/media_0.ts": b"AAAA", "/media_1.ts": b"BBBB", "/media_2.ts": b"CCCC"},
-        delay_paths={"/media_0.ts": 0.4})
+        delay_paths={"/media_0.ts": 0.15})
     out = tmp_path / "clip.ts"
 
     fetch.download_segments(
