@@ -25,6 +25,28 @@ uv run pygranicus "https://archive-video.granicus.com/video/file/here.mp4" --ver
 
 Use `-o` to choose the filename yourself.
 
+## Downloading part of a meeting
+
+Meetings run for hours. To take a slice of one, give `--start` and `--end` as
+`HH:MM:SS`, `MM:SS`, or plain seconds:
+
+```sh
+uv run pygranicus "https://sanfrancisco.granicus.com/player/clip/42000?view_id=13" --start 1:00:00 --end 1:10:00
+```
+
+That fetches only the part you asked for — about 8 MB per 30 seconds, rather
+than the 2.5 GB of a full meeting — and saves
+`BOS Rules Committee-2022-09-12 1h00m00s-1h10m00s.mp4`. Either bound may be
+omitted: `--start` alone runs to the end, `--end` alone from the beginning.
+
+Ranges come from the segmented stream, which is cut into pieces of about two
+seconds. A segment is kept whole, so you may get up to two seconds of extra
+video at each end. Trimming to the exact frame would mean re-encoding, which is
+slower and loses quality.
+
+The pieces are joined into an `.mp4` using `ffmpeg` if it is installed. Without
+it you get a `.ts` file instead, which plays in VLC and most players.
+
 To install it as a persistent command on your PATH:
 
 ```sh

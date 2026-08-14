@@ -350,3 +350,86 @@ def test_an_unreachable_listing_yields_no_date_rather_than_raising():
     # The date is a nicety. Failing to find it must never stop a download.
     assert fetch._recording_date(
         "http://127.0.0.1:9/player/clip/42000", "13", "42000") is None
+
+
+CHUNKLIST = b"""#EXTM3U
+#EXT-X-VERSION:3
+#EXT-X-TARGETDURATION:4
+#EXTINF:2.0,
+media_0.ts
+#EXTINF:2.0,
+media_1.ts
+#EXTINF:2.0,
+media_2.ts
+#EXTINF:2.0,
+media_3.ts
+#EXTINF:2.0,
+media_4.ts
+#EXT-X-ENDLIST
+"""
+
+
+def test_parses_the_timecode_forms_people_type():
+    assert fetch.parse_timecode("90") == 90
+    assert fetch.parse_timecode("1:30") == 90
+    assert fetch.parse_timecode("01:00:00") == 3600
+    assert fetch.parse_timecode("2:03:04") == 7384
+
+
+def test_rejects_a_timecode_it_cannot_read():
+    with pytest.raises(ValueError, match="not a time"):
+        fetch.parse_timecode("half past four")
+
+
+def test_derives_the_chunklist_url_from_the_media_url():
+    assert fetch.chunklist_url(
+        "https://archive-video.granicus.com/sanfrancisco/sf_abc.mp4") == (
+        "https://archive-stream.granicus.com/OnDemand/_definst_/"
+        "mp4:archive/sanfrancisco/sf_abc.mp4/chunklist.m3u8")
+
+
+def test_selects_only_the_segments_covering_the_range():
+    base = "https://host/path/chunklist.m3u8"
+
+    urls = fetch.select_segments(CHUNKLIST.decode(), base, 4, 8)
+
+    assert urls == ["https://host/path/media_2.ts",
+                    "https://host/path/media_3.ts"]
+
+
+def test_a_range_boundary_inside_a_segment_keeps_that_segment():
+    base = "https://host/path/chunklist.m3u8"
+
+    urls = fetch.select_segments(CHUNKLIST.decode(), base, 3, 5)
+
+    assert urls == ["https://host/path/media_1.ts",
+                    "https://host/path/media_2.ts"]
+
+
+def test_an_open_ended_range_runs_to_the_end():
+    base = "https://host/path/chunklist.m3u8"
+
+    urls = fetch.select_segments(CHUNKLIST.decode(), base, 6, None)
+
+    assert urls == ["https://host/path/media_3.ts",
+                    "https://host/path/media_4.ts"]
+
+
+def test_range_suffix_is_safe_for_a_filename():
+    assert fetch.range_suffix(3600, 4200) == "1h00m00s-1h10m00s"
+    assert fetch.range_suffix(0, None) == "0h00m00s-end"
+
+
+def test_downloads_segments_in_order(tmp_path, granicus):
+    # Segment 0 is served slowly so it completes last; the output must still
+    # follow the playlist order, not the completion order.
+    server = granicus(b"", segment_bodies={
+        "/media_0.ts": b"AAAA", "/media_1.ts": b"BBBB", "/media_2.ts": b"CCCC"},
+        delay_paths={"/media_0.ts": 0.4})
+    out = tmp_path / "clip.ts"
+
+    fetch.download_segments(
+        [f"{server.origin}/media_{i}.ts" for i in range(3)],
+        4, str(out), verbose=False)
+
+    assert out.read_bytes() == b"AAAABBBBCCCC"
