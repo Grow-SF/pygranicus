@@ -413,6 +413,43 @@ def test_an_open_ended_range_runs_to_the_end():
                     "https://host/path/media_4.ts"]
 
 
+_SEGMENTS = "\n".join(f"#EXTINF:2.0,\nmedia_{i}.ts" for i in range(24))
+# 24 segments of 2s: media_i covers [2i, 2i+2), so the playlist runs 0-48s.
+LONG_CHUNKLIST = f"#EXTM3U\n#EXT-X-VERSION:3\n{_SEGMENTS}\n#EXT-X-ENDLIST\n"
+
+
+def test_a_start_mid_segment_rounds_down_to_that_segment_s_start():
+    """--start 00:00:45 must yield video from 44s, not from 46s."""
+    base = "https://host/path/chunklist.m3u8"
+
+    urls = fetch.select_segments(LONG_CHUNKLIST, base, 45, 48)
+
+    # 45s falls inside media_22, which covers [44, 46).
+    assert urls == ["https://host/path/media_22.ts",
+                    "https://host/path/media_23.ts"]
+
+
+def test_an_end_mid_segment_rounds_up_to_that_segment_s_end():
+    """--end 00:00:45 must yield video through 46s, not stop at 44s."""
+    base = "https://host/path/chunklist.m3u8"
+
+    urls = fetch.select_segments(LONG_CHUNKLIST, base, 42, 45)
+
+    # 45s falls inside media_22, which covers [44, 46).
+    assert urls == ["https://host/path/media_21.ts",
+                    "https://host/path/media_22.ts"]
+
+
+def test_a_range_on_segment_boundaries_takes_no_extra_segment():
+    """Flooring a start and ceiling an end that already sit on a boundary
+    must be no-ops, rather than reaching into the neighbouring segments."""
+    base = "https://host/path/chunklist.m3u8"
+
+    urls = fetch.select_segments(LONG_CHUNKLIST, base, 44, 46)
+
+    assert urls == ["https://host/path/media_22.ts"]
+
+
 def test_range_suffix_is_safe_for_a_filename():
     assert fetch.range_suffix(3600, 4200) == "1h00m00s-1h10m00s"
     assert fetch.range_suffix(0, None) == "0h00m00s-end"
