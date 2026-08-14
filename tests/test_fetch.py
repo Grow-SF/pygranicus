@@ -270,7 +270,7 @@ def test_resolves_a_player_page_to_the_video_url(granicus):
         "sanfrancisco_0fa97861.mp4")
 
 
-def test_default_name_combines_the_title_and_clip_id(granicus):
+def test_falls_back_to_the_clip_id_when_no_view_is_named(granicus):
     server = granicus(PLAYER_PAGE)
 
     _, name = fetch.resolve_video_url(f"{server.url}/player/clip/42000")
@@ -315,3 +315,38 @@ def test_titles_are_made_safe_for_the_filesystem(granicus):
 
     assert name == "Budget & Finance 34 Committee-7.mp4"
     assert "/" not in name.replace(".mp4", "")
+
+
+# The fixture serves one body for every path, so this doubles as the player
+# page and as the view listing that the date is looked up in.
+PAGE_WITH_LISTING_ROW = PLAYER_PAGE.replace(
+    b"</body>",
+    b"""<tr><td>1662966000</td><td>09/12/22</td>
+<td><a href="MediaPlayer.php?view_id=13&clip_id=42000">Video</a></td></tr>
+</body>""")
+
+
+def test_uses_the_meeting_date_when_the_url_names_a_view(granicus):
+    server = granicus(PAGE_WITH_LISTING_ROW)
+
+    _, name = fetch.resolve_video_url(
+        f"{server.url}/player/clip/42000?view_id=13")
+
+    assert name == "BOS Rules Committee-2022-09-12.mp4"
+
+
+def test_falls_back_to_the_clip_id_when_the_view_has_no_date_for_it(granicus):
+    # A clip belongs to one body's view; asking a different view yields
+    # nothing, which must not cost us a usable filename.
+    server = granicus(PLAYER_PAGE)
+
+    _, name = fetch.resolve_video_url(
+        f"{server.url}/player/clip/42000?view_id=13")
+
+    assert name == "BOS Rules Committee-42000.mp4"
+
+
+def test_an_unreachable_listing_yields_no_date_rather_than_raising():
+    # The date is a nicety. Failing to find it must never stop a download.
+    assert fetch._recording_date(
+        "http://127.0.0.1:9/player/clip/42000", "13", "42000") is None

@@ -13,8 +13,10 @@ you:
 uvx --from git+https://github.com/Grow-SF/pygranicus pygranicus "https://sanfrancisco.granicus.com/player/clip/42000?view_id=13&redirect=true"
 ```
 
-That saves `BOS Rules Committee-42000.mp4`, named after the meeting rather than
-the underlying file's identifier. The older `MediaPlayer.php?clip_id=…` links
+That saves `BOS Rules Committee-2022-09-12.mp4`, named after the meeting rather
+than the underlying file's identifier. The date is only published on a body's
+listing page, so it can be found when the URL you paste carries a `view_id`;
+without one the clip id is used instead. The older `MediaPlayer.php?clip_id=…` links
 work too, as does a direct media URL:
 
 ```sh
