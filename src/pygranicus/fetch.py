@@ -1,8 +1,11 @@
 import argparse
 import requests
+import html
+import re
 import time
 import os
 import sys
+import urllib.parse
 import concurrent.futures
 import threading
 
@@ -23,6 +26,100 @@ USER_AGENT = ('Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) '
 # Bytes pulled from the socket per read. Small enough that the bar moves
 # smoothly, large enough not to add measurable overhead.
 PROGRESS_BLOCK_SIZE = 64 * 1024
+
+# Granicus player pages link the downloadable file directly. There is exactly
+# one per page, alongside an .mp3 of the same recording that we ignore.
+VIDEO_URL_RE = re.compile(
+    r'https://archive-video\.granicus\.com/[^\s"\'<>]+\.mp4')
+# Both the modern /player/clip/<id> and the legacy MediaPlayer.php?clip_id=<id>
+# forms are in circulation.
+CLIP_ID_RE = re.compile(r'/clip/(\d+)|[?&]clip_id=(\d+)')
+TITLE_RE = re.compile(r'<title>(.*?)</title>', re.IGNORECASE | re.DOTALL)
+# A clip's meeting date is not on the player page. It lives on the listing
+# page for the body that met, which is keyed by view_id -- so the date can
+# only be found when the pasted URL carries one.
+VIEW_ID_RE = re.compile(r'[?&]view_id=(\d+)')
+# Listing rows print the meeting date as mm/dd/yy.
+LISTING_DATE_RE = re.compile(r'\b(\d{2})/(\d{2})/(\d{2})\b')
+# How far back from a clip's link to look for its row's timestamp.
+LISTING_ROW_SPAN = 1500
+LISTING_TIMEOUT = 30
+UNSAFE_FILENAME_RE = re.compile(r'[/\\:*?"<>|\x00-\x1f]')
+# Leaves room for the clip id and extension inside the usual 255-byte limit.
+MAX_TITLE_LENGTH = 150
+
+
+def _safe_filename(text):
+    """Turn a page title into something a filesystem will accept."""
+    text = UNSAFE_FILENAME_RE.sub('', html.unescape(text))
+    return ' '.join(text.split())[:MAX_TITLE_LENGTH].strip()
+
+
+def _recording_date(page_url, view_id, clip_id):
+    """Return the clip's meeting date as YYYY-MM-DD, or None.
+
+    The date is a nicety, so every failure here returns None rather than
+    raising: not knowing it must never stop a download.
+    """
+    parts = urllib.parse.urlparse(page_url)
+    listing = (f'{parts.scheme}://{parts.netloc}'
+               f'/ViewPublisher.php?view_id={view_id}')
+    try:
+        response = requests.get(listing, headers={"User-Agent": USER_AGENT},
+                                timeout=LISTING_TIMEOUT)
+        response.raise_for_status()
+    except requests.RequestException:
+        return None
+
+    page = response.text
+    for match in re.finditer(rf'clip_id={clip_id}\b', page):
+        row = page[max(0, match.start() - LISTING_ROW_SPAN):match.start()]
+        dates = LISTING_DATE_RE.findall(row)
+        if dates:
+            month, day, year = dates[-1]
+            return f'20{year}-{month}-{day}'
+    return None
+
+
+def resolve_video_url(url):
+    """Resolve a Granicus player URL to (video url, default filename).
+
+    A URL that already points at a media file is returned untouched, so
+    pasting a direct .mp4 link costs no extra request.
+    """
+    if urllib.parse.urlparse(url).path.endswith('.mp4'):
+        return url, os.path.basename(urllib.parse.urlparse(url).path)
+
+    response = requests.get(url, headers={"User-Agent": USER_AGENT})
+    # A clip id that does not exist is a clean 404, which says so far better
+    # than anything we could infer from the page body.
+    response.raise_for_status()
+    page = response.text
+
+    match = VIDEO_URL_RE.search(page)
+    if match is None:
+        raise ValueError(f"no downloadable video found at {url}")
+    video_url = match.group(0)
+
+    title_match = TITLE_RE.search(page)
+    title = _safe_filename(title_match.group(1)) if title_match else ''
+    clip_match = CLIP_ID_RE.search(url)
+    clip_id = next((g for g in clip_match.groups() if g), None) \
+        if clip_match else None
+
+    # Prefer the meeting date; fall back to the clip id, which is always
+    # available from the URL even when the date is not.
+    suffix = None
+    view_match = VIEW_ID_RE.search(url)
+    if view_match and clip_id:
+        suffix = _recording_date(url, view_match.group(1), clip_id)
+    suffix = suffix or clip_id
+
+    if title and suffix:
+        return video_url, f'{title}-{suffix}.mp4'
+    # Nothing better to go on; fall back to the name the file already has.
+    return video_url, os.path.basename(
+        urllib.parse.urlparse(video_url).path)
 
 
 def _log(message, progress=None):
@@ -162,12 +259,9 @@ def main():
                         help='Do not display the progress bar')
     args = parser.parse_args()
 
-    url = args.url
     chunk_size = args.chunk_size
-    if args.output_file:
-        output_file = args.output_file
-    else:
-        output_file = os.path.basename(url)
+    url, default_output_file = resolve_video_url(args.url)
+    output_file = args.output_file or default_output_file
     num_threads = args.num_threads
     verbose = args.verbose
     try:

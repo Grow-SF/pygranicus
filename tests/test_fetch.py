@@ -251,3 +251,102 @@ def test_interrupt_stops_the_download_promptly(tmp_path, granicus, payload):
         interrupt.cancel()
 
     assert time.monotonic() - started < 3, "interrupt was not acted on promptly"
+
+
+PLAYER_PAGE = b"""<html><head><title>BOS Rules Committee</title></head><body>
+<a href="https://archive-stream.granicus.com/OnDemand/_definst_/mp4:archive/sf/sf_abc.mp4/playlist.m3u8">stream</a>
+<a href="https://archive-video.granicus.com/sanfrancisco/sanfrancisco_0fa97861.mp4">Download</a>
+<a href="https://archive-video.granicus.com/sanfrancisco/sanfrancisco_0fa97861.mp3">Audio</a>
+</body></html>"""
+
+
+def test_resolves_a_player_page_to_the_video_url(granicus):
+    server = granicus(PLAYER_PAGE)
+
+    video_url, _ = fetch.resolve_video_url(f"{server.url}/player/clip/42000")
+
+    assert video_url == (
+        "https://archive-video.granicus.com/sanfrancisco/"
+        "sanfrancisco_0fa97861.mp4")
+
+
+def test_falls_back_to_the_clip_id_when_no_view_is_named(granicus):
+    server = granicus(PLAYER_PAGE)
+
+    _, name = fetch.resolve_video_url(f"{server.url}/player/clip/42000")
+
+    assert name == "BOS Rules Committee-42000.mp4"
+
+
+def test_legacy_media_player_urls_also_resolve(granicus):
+    server = granicus(PLAYER_PAGE)
+
+    _, name = fetch.resolve_video_url(
+        f"{server.url}/MediaPlayer.php?view_id=13&clip_id=42000")
+
+    assert name == "BOS Rules Committee-42000.mp4"
+
+
+def test_a_direct_media_url_is_returned_without_fetching_anything(granicus):
+    server = granicus(PLAYER_PAGE)
+    direct = f"{server.url}"          # the fixture URL ends in /video.mp4
+
+    video_url, name = fetch.resolve_video_url(direct)
+
+    assert video_url == direct
+    assert name == "video.mp4"
+    assert server.requests == [], "a direct .mp4 URL must not be fetched"
+
+
+def test_a_page_with_no_video_reports_clearly(granicus):
+    server = granicus(b"<html><head><title>Nothing</title></head></html>")
+
+    with pytest.raises(ValueError, match="no downloadable video"):
+        fetch.resolve_video_url(f"{server.url}/player/clip/1")
+
+
+def test_titles_are_made_safe_for_the_filesystem(granicus):
+    page = PLAYER_PAGE.replace(
+        b"<title>BOS Rules Committee</title>",
+        b"<title>Budget &amp; Finance: 3/4  Committee</title>")
+    server = granicus(page)
+
+    _, name = fetch.resolve_video_url(f"{server.url}/player/clip/7")
+
+    assert name == "Budget & Finance 34 Committee-7.mp4"
+    assert "/" not in name.replace(".mp4", "")
+
+
+# The fixture serves one body for every path, so this doubles as the player
+# page and as the view listing that the date is looked up in.
+PAGE_WITH_LISTING_ROW = PLAYER_PAGE.replace(
+    b"</body>",
+    b"""<tr><td>09/12/22</td>
+<td><a href="MediaPlayer.php?view_id=13&clip_id=42000">Video</a></td></tr>
+</body>""")
+
+
+def test_uses_the_meeting_date_when_the_url_names_a_view(granicus):
+    server = granicus(PAGE_WITH_LISTING_ROW)
+
+    _, name = fetch.resolve_video_url(
+        f"{server.url}/player/clip/42000?view_id=13")
+
+    assert name == "BOS Rules Committee-2022-09-12.mp4"
+
+
+def test_falls_back_to_the_clip_id_when_the_view_has_no_date_for_it(granicus):
+    # A clip belongs to one body's view; asking a different view yields
+    # nothing, which must not cost us a usable filename.
+    server = granicus(PLAYER_PAGE)
+
+    _, name = fetch.resolve_video_url(
+        f"{server.url}/player/clip/42000?view_id=13")
+
+    assert name == "BOS Rules Committee-42000.mp4"
+
+
+def test_an_unreachable_listing_yields_no_date_rather_than_raising():
+    # The date is a nicety. Failing to find it must never stop a download.
+    assert fetch._recording_date(
+        "http://127.0.0.1:9/player/clip/42000", "13", "42000") is None

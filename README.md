@@ -6,17 +6,24 @@ Download granicus video files efficiently
 
 # Usage
 
-No clone or install needed — [uv](https://docs.astral.sh/uv/) fetches and runs it:
+Paste the URL of the player page you are watching, and the video is found for
+you:
 
 ```sh
-uvx --from git+https://github.com/Grow-SF/pygranicus pygranicus "https://archive-video.granicus.com/video/file/here.mp4" --verbose
+uvx --from git+https://github.com/Grow-SF/pygranicus pygranicus "https://sanfrancisco.granicus.com/player/clip/42000?view_id=13&redirect=true"
 ```
 
-From a local clone:
+That saves `BOS Rules Committee-2022-09-12.mp4`, named after the meeting rather
+than the underlying file's identifier. The date is only published on a body's
+listing page, so it can be found when the URL you paste carries a `view_id`;
+without one the clip id is used instead. The older `MediaPlayer.php?clip_id=…` links
+work too, as does a direct media URL:
 
 ```sh
 uv run pygranicus "https://archive-video.granicus.com/video/file/here.mp4" --verbose
 ```
+
+Use `-o` to choose the filename yourself.
 
 To install it as a persistent command on your PATH:
 
