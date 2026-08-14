@@ -433,3 +433,59 @@ def test_downloads_segments_in_order(tmp_path, granicus):
         4, str(out), verbose=False)
 
     assert out.read_bytes() == b"AAAABBBBCCCC"
+
+
+CHAPTER_PAGE = b"""<html><head><title>BOS Rules Committee</title></head><body>
+<a href="https://archive-video.granicus.com/sanfrancisco/sanfrancisco_0fa97861.mp4">Download</a>
+<section id="index">
+<div class="index-point flex-col-center" role="link" time="14" data-id="1" tabindex="0" >
+ 11 ROLL CALL AND ANNOUNCEMENTS </div>
+<div class="index-point flex-col-center" role="link" time="375" data-id="2" tabindex="0" >
+ 220848 Appointment, Treasury Oversight Committee </div>
+<div time="470" class="index-point" role="link" data-id="3" tabindex="0" >
+ 220427 Administrative Code &amp; Veterans </div>
+</section></body></html>"""
+
+
+def test_parses_chapters_from_the_player_page():
+    chapters = fetch.parse_chapters(CHAPTER_PAGE.decode())
+
+    assert chapters == [
+        (14, "11 ROLL CALL AND ANNOUNCEMENTS"),
+        (375, "220848 Appointment, Treasury Oversight Committee"),
+        (470, "220427 Administrative Code & Veterans"),
+    ]
+
+
+def test_a_page_without_chapters_has_none():
+    assert fetch.parse_chapters(PLAYER_PAGE.decode()) == []
+
+
+def test_each_chapter_ends_where_the_next_one_begins():
+    ranges = fetch.chapter_ranges([(14, "one"), (375, "two"), (470, "three")])
+
+    assert ranges[0] == (14, 375, "one")
+    assert ranges[1] == (375, 470, "two")
+
+
+def test_the_last_chapter_runs_to_the_end_of_the_meeting():
+    ranges = fetch.chapter_ranges([(14, "one"), (375, "two")])
+
+    assert ranges[-1] == (375, None, "two")
+
+
+def test_chapter_filenames_hang_off_the_meeting_name():
+    name = fetch.chapter_filename(
+        "BOS Rules Committee-2022-09-12.mp4",
+        "220427 Administrative Code / Veterans: part 2")
+
+    # Removing the slash and colon leaves doubled spaces, which collapse.
+    assert name == (
+        "BOS Rules Committee-2022-09-12 "
+        "220427 Administrative Code Veterans part 2.mp4")
+
+
+def test_chapter_filenames_stay_within_a_sane_length():
+    name = fetch.chapter_filename("meeting.mp4", "x" * 400)
+
+    assert len(name.encode()) < 255

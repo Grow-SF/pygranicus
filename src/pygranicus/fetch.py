@@ -53,6 +53,14 @@ LISTING_TIMEOUT = 30
 STREAM_HOST = 'https://archive-stream.granicus.com'
 SEGMENT_DURATION_RE = re.compile(r'#EXTINF:([\d.]+)')
 PLAYLIST_TIMEOUT = 60
+
+# Player pages mark each agenda item with an "index point" carrying the second
+# it starts at. They are the chapters offered by --chapters.
+INDEX_POINT_RE = re.compile(r'<div([^>]*index-point[^>]*)>(.*?)</div>', re.S)
+INDEX_TIME_RE = re.compile(r'time="(\d+)"')
+TAG_RE = re.compile(r'<[^>]+>')
+# Leaves room for the meeting name a chapter file hangs off.
+MAX_CHAPTER_TITLE = 120
 UNSAFE_FILENAME_RE = re.compile(r'[/\\:*?"<>|\x00-\x1f]')
 # Leaves room for the clip id and extension inside the usual 255-byte limit.
 MAX_TITLE_LENGTH = 150
@@ -62,6 +70,64 @@ def _safe_filename(text):
     """Turn a page title into something a filesystem will accept."""
     text = UNSAFE_FILENAME_RE.sub('', html.unescape(text))
     return ' '.join(text.split())[:MAX_TITLE_LENGTH].strip()
+
+
+def parse_chapters(page):
+    """Return [(start second, title)] for the agenda items a page lists."""
+    chapters = []
+    for attributes, body in INDEX_POINT_RE.findall(page):
+        moment = INDEX_TIME_RE.search(attributes)
+        if moment is None:
+            continue
+        title = html.unescape(TAG_RE.sub(' ', body))
+        title = ' '.join(title.split())
+        if title:
+            chapters.append((int(moment.group(1)), title))
+    return sorted(chapters)
+
+
+def chapter_ranges(chapters):
+    """Pair each chapter with where it ends: the next one's start.
+
+    The last chapter has no successor, so it runs to the end of the video.
+    """
+    ranges = []
+    for i, (start, title) in enumerate(chapters):
+        end = chapters[i + 1][0] if i + 1 < len(chapters) else None
+        ranges.append((start, end, title))
+    return ranges
+
+
+def chapter_filename(output_file, title):
+    """Name a chapter's file after the meeting it came from."""
+    stem, extension = os.path.splitext(output_file)
+    safe = _safe_filename(title)[:MAX_CHAPTER_TITLE].strip()
+    return f'{stem} {safe}{extension}'
+
+
+def chapters_for(page_url):
+    """Fetch a player page and return the chapters it lists.
+
+    This reads the page a second time -- resolve_video_url does not hand back
+    the HTML it parsed -- which is a few tens of kilobytes against a download
+    measured in megabytes.
+    """
+    response = requests.get(page_url, headers={"User-Agent": USER_AGENT},
+                            timeout=LISTING_TIMEOUT)
+    response.raise_for_status()
+    return parse_chapters(response.text)
+
+
+def choose_chapters(chapters):
+    """Ask which chapters to download. Nothing is selected to begin with."""
+    import questionary
+    choices = [
+        questionary.Choice(
+            title=f'{range_suffix(start, None)[:-4]}  {title}', value=index)
+        for index, (start, title) in enumerate(chapters)]
+    picked = questionary.checkbox(
+        'Select chapters to download', choices=choices).ask()
+    return picked or []
 
 
 def parse_timecode(text):
@@ -409,6 +475,8 @@ def main():
                         help='Print the current chunk number, total number of chunks and download speed')
     parser.add_argument('--no-progress', action='store_true',
                         help='Do not display the progress bar')
+    parser.add_argument('--chapters', action='store_true',
+                        help='List the agenda items and pick which to download')
     parser.add_argument('--start', type=str, default=None,
                         help='Start of the range to download, as HH:MM:SS, MM:SS or seconds')
     parser.add_argument('--end', type=str, default=None,
@@ -425,6 +493,32 @@ def main():
     end = parse_timecode(args.end) if args.end else None
     if end is not None and end <= (start or 0):
         raise SystemExit("--end must come after --start")
+    if args.chapters and (start is not None or end is not None):
+        raise SystemExit("--chapters and --start/--end are two ways to ask "
+                         "for the same thing; use one")
+
+    if args.chapters:
+        if not sys.stdin.isatty():
+            raise SystemExit("--chapters needs a terminal to ask you in")
+        chapters = chapters_for(args.url)
+        if not chapters:
+            raise SystemExit(f"{args.url} lists no agenda items")
+        picked = choose_chapters(chapters)
+        if not picked:
+            raise SystemExit("Nothing selected; nothing downloaded")
+        ranges = chapter_ranges(chapters)
+        try:
+            for index in picked:
+                chapter_start, chapter_end, title = ranges[index]
+                written = download_range(
+                    url, chapter_start, chapter_end, num_threads,
+                    chapter_filename(output_file, title), verbose,
+                    progress_sink=progress_sink)
+                print(f'Wrote {written}', file=sys.stderr)
+        except KeyboardInterrupt:
+            print("\nInterrupted.", file=sys.stderr)
+            raise SystemExit(130)
+        return
 
     try:
         if start is None and end is None:
