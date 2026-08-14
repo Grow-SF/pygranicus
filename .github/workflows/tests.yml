@@ -15,7 +15,9 @@ jobs:
         python-version: ["3.10", "3.14"]
     steps:
       - uses: actions/checkout@v7
-      - uses: astral-sh/setup-uv@v10
+      # Pinned to an exact release: setup-uv stopped publishing moving major
+      # tags after v7, so @v10 does not resolve.
+      - uses: astral-sh/setup-uv@v10.0.1
         with:
           enable-cache: true
           python-version: ${{ matrix.python-version }}
