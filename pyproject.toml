@@ -5,7 +5,7 @@ description = "Download Granicus video files efficiently"
 readme = "README.md"
 requires-python = ">=3.10"
 license = { file = "LICENSE" }
-dependencies = ["requests"]
+dependencies = ["requests", "tqdm"]
 
 [project.urls]
 Homepage = "https://github.com/Grow-SF/pygranicus"

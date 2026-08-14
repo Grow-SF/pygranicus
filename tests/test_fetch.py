@@ -1,3 +1,4 @@
+import io
 import sys
 
 import pytest
@@ -152,3 +153,76 @@ def test_downloads_file_smaller_than_one_chunk(tmp_path, granicus, payload):
     fetch.download_video(server.url, CHUNK * 10, 4, str(out))
 
     assert out.read_bytes() == data
+
+
+class FakeTTY(io.StringIO):
+    """A StringIO that claims to be a terminal, so tqdm will render to it."""
+
+    def isatty(self):
+        return True
+
+
+def test_progress_bar_renders_to_a_terminal_sink(
+        tmp_path, granicus, payload):
+    server = granicus(payload(50_000))
+    sink = FakeTTY()
+
+    fetch.download_video(server.url, CHUNK, 4, str(tmp_path / "out.mp4"),
+                         progress_sink=sink)
+
+    assert "100%" in sink.getvalue()
+
+
+def test_contents_are_byte_exact_with_progress_enabled(
+        tmp_path, granicus, payload):
+    # Guards the switch from response.content to iter_content.
+    data = payload(50_000)
+    server = granicus(data)
+    out = tmp_path / "out.mp4"
+
+    fetch.download_video(server.url, CHUNK, 4, str(out),
+                         progress_sink=FakeTTY())
+
+    assert out.read_bytes() == data
+
+
+def test_verbose_lines_still_appear_while_a_bar_is_active(
+        tmp_path, granicus, payload):
+    # Verbose output must survive being routed through _log rather than
+    # print() when a bar exists.
+    server = granicus(payload(50_000))
+    sink = FakeTTY()
+
+    fetch.download_video(server.url, CHUNK, 4, str(tmp_path / "out.mp4"),
+                         verbose=True, progress_sink=sink)
+
+    assert "Downloading chunk" in sink.getvalue()
+
+
+def test_cli_shows_the_bar_by_default_on_a_terminal(
+        tmp_path, granicus, payload, monkeypatch):
+    server = granicus(payload(50_000))
+    stderr = FakeTTY()
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(sys, "stderr", stderr)
+    monkeypatch.setattr(
+        sys, "argv", ["pygranicus", server.url, "-c", str(CHUNK)])
+
+    fetch.main()
+
+    assert "100%" in stderr.getvalue()
+
+
+def test_cli_no_progress_flag_disables_the_bar(
+        tmp_path, granicus, payload, monkeypatch):
+    server = granicus(payload(50_000))
+    stderr = FakeTTY()
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(sys, "stderr", stderr)
+    monkeypatch.setattr(
+        sys, "argv",
+        ["pygranicus", server.url, "-c", str(CHUNK), "--no-progress"])
+
+    fetch.main()
+
+    assert stderr.getvalue() == ""

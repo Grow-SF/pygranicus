@@ -30,6 +30,7 @@ pygranicus "https://archive-video.granicus.com/video/file/here.mp4" --verbose
 | `-o`, `--output_file` | Output filename. Defaults to the last part of the url path. |
 | `-t`, `--num_threads` | Number of threads to use for downloading. Defaults to the CPU count. |
 | `-v`, `--verbose` | Print chunk progress and per-chunk download speed. |
+| `--no-progress` | Disable the progress bar. The bar is shown by default when stderr is a terminal, and silences itself automatically when output is piped or redirected. |
 
 # Development
 
