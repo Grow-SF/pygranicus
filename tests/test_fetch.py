@@ -251,3 +251,67 @@ def test_interrupt_stops_the_download_promptly(tmp_path, granicus, payload):
         interrupt.cancel()
 
     assert time.monotonic() - started < 3, "interrupt was not acted on promptly"
+
+
+PLAYER_PAGE = b"""<html><head><title>BOS Rules Committee</title></head><body>
+<a href="https://archive-stream.granicus.com/OnDemand/_definst_/mp4:archive/sf/sf_abc.mp4/playlist.m3u8">stream</a>
+<a href="https://archive-video.granicus.com/sanfrancisco/sanfrancisco_0fa97861.mp4">Download</a>
+<a href="https://archive-video.granicus.com/sanfrancisco/sanfrancisco_0fa97861.mp3">Audio</a>
+</body></html>"""
+
+
+def test_resolves_a_player_page_to_the_video_url(granicus):
+    server = granicus(PLAYER_PAGE)
+
+    video_url, _ = fetch.resolve_video_url(f"{server.url}/player/clip/42000")
+
+    assert video_url == (
+        "https://archive-video.granicus.com/sanfrancisco/"
+        "sanfrancisco_0fa97861.mp4")
+
+
+def test_default_name_combines_the_title_and_clip_id(granicus):
+    server = granicus(PLAYER_PAGE)
+
+    _, name = fetch.resolve_video_url(f"{server.url}/player/clip/42000")
+
+    assert name == "BOS Rules Committee-42000.mp4"
+
+
+def test_legacy_media_player_urls_also_resolve(granicus):
+    server = granicus(PLAYER_PAGE)
+
+    _, name = fetch.resolve_video_url(
+        f"{server.url}/MediaPlayer.php?view_id=13&clip_id=42000")
+
+    assert name == "BOS Rules Committee-42000.mp4"
+
+
+def test_a_direct_media_url_is_returned_without_fetching_anything(granicus):
+    server = granicus(PLAYER_PAGE)
+    direct = f"{server.url}"          # the fixture URL ends in /video.mp4
+
+    video_url, name = fetch.resolve_video_url(direct)
+
+    assert video_url == direct
+    assert name == "video.mp4"
+    assert server.requests == [], "a direct .mp4 URL must not be fetched"
+
+
+def test_a_page_with_no_video_reports_clearly(granicus):
+    server = granicus(b"<html><head><title>Nothing</title></head></html>")
+
+    with pytest.raises(ValueError, match="no downloadable video"):
+        fetch.resolve_video_url(f"{server.url}/player/clip/1")
+
+
+def test_titles_are_made_safe_for_the_filesystem(granicus):
+    page = PLAYER_PAGE.replace(
+        b"<title>BOS Rules Committee</title>",
+        b"<title>Budget &amp; Finance: 3/4  Committee</title>")
+    server = granicus(page)
+
+    _, name = fetch.resolve_video_url(f"{server.url}/player/clip/7")
+
+    assert name == "Budget & Finance 34 Committee-7.mp4"
+    assert "/" not in name.replace(".mp4", "")
