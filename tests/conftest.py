@@ -25,11 +25,17 @@ class FakeGranicus:
     """
 
     def __init__(self, payload, blocked_ua_prefixes=(),
-                 blocked_methods=("HEAD", "GET"), delay_ranges=None):
+                 blocked_methods=("HEAD", "GET"), delay_ranges=None,
+                 segment_bodies=None, delay_paths=None):
         self.payload = payload
         self.blocked_ua_prefixes = blocked_ua_prefixes
         self.blocked_methods = blocked_methods
         self.delay_ranges = delay_ranges or {}
+        # Paths served whole rather than as ranges of `payload`,
+        # for the stream segment tests, plus per-path delays to
+        # force out-of-order completion.
+        self.segment_bodies = dict(segment_bodies or {})
+        self.delay_paths = dict(delay_paths or {})
         self.requests = []
         self._lock = threading.Lock()
         self._server = http.server.ThreadingHTTPServer(
@@ -37,6 +43,10 @@ class FakeGranicus:
         self._thread = threading.Thread(
             target=self._server.serve_forever, daemon=True)
         self._thread.start()
+
+    @property
+    def origin(self):
+        return f"http://127.0.0.1:{self._server.server_address[1]}"
 
     @property
     def url(self):
@@ -97,6 +107,18 @@ class FakeGranicus:
 
             def do_GET(self):
                 server._record("GET", self.headers)
+                path = self.path.split("?")[0]
+                if path in server.segment_bodies:
+                    delay = server.delay_paths.get(path, 0)
+                    if delay:
+                        time.sleep(delay)
+                    body = server.segment_bodies[path]
+                    self.send_response(200)
+                    self.send_header("Content-Type", "video/mp2t")
+                    self.send_header("Content-Length", str(len(body)))
+                    self.end_headers()
+                    self.wfile.write(body)
+                    return
                 if self._is_blocked("GET"):
                     self._send_403()
                     self.wfile.write(ERROR_PAGE)

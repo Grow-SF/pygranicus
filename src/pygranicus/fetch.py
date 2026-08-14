@@ -2,6 +2,8 @@ import argparse
 import requests
 import html
 import re
+import shutil
+import subprocess
 import time
 import os
 import sys
@@ -44,6 +46,13 @@ LISTING_DATE_RE = re.compile(r'\b(\d{2})/(\d{2})/(\d{2})\b')
 # How far back from a clip's link to look for its row's timestamp.
 LISTING_ROW_SPAN = 1500
 LISTING_TIMEOUT = 30
+
+# The stream is published alongside every archived video, cut into segments of
+# a couple of seconds each. That granularity is what makes a time range cheap:
+# only the segments covering it are fetched.
+STREAM_HOST = 'https://archive-stream.granicus.com'
+SEGMENT_DURATION_RE = re.compile(r'#EXTINF:([\d.]+)')
+PLAYLIST_TIMEOUT = 60
 UNSAFE_FILENAME_RE = re.compile(r'[/\\:*?"<>|\x00-\x1f]')
 # Leaves room for the clip id and extension inside the usual 255-byte limit.
 MAX_TITLE_LENGTH = 150
@@ -53,6 +62,117 @@ def _safe_filename(text):
     """Turn a page title into something a filesystem will accept."""
     text = UNSAFE_FILENAME_RE.sub('', html.unescape(text))
     return ' '.join(text.split())[:MAX_TITLE_LENGTH].strip()
+
+
+def parse_timecode(text):
+    """Read 'HH:MM:SS', 'MM:SS' or plain seconds into a number of seconds."""
+    parts = str(text).strip().split(':')
+    if len(parts) > 3 or not all(part.isdigit() for part in parts):
+        raise ValueError(
+            f"{text!r} is not a time; use HH:MM:SS, MM:SS or seconds")
+    seconds = 0
+    for part in parts:
+        seconds = seconds * 60 + int(part)
+    return seconds
+
+
+def range_suffix(start, end):
+    """Describe a time range in a form a filesystem will accept."""
+    def clock(seconds):
+        hours, seconds = divmod(int(seconds), 3600)
+        minutes, seconds = divmod(seconds, 60)
+        return f'{hours}h{minutes:02d}m{seconds:02d}s'
+    return f'{clock(start)}-{clock(end) if end is not None else "end"}'
+
+
+def chunklist_url(video_url):
+    """Derive the stream's segment playlist from an archived video URL."""
+    path = urllib.parse.urlparse(video_url).path.strip('/')
+    if path.count('/') != 1:
+        raise ValueError(f"cannot find the stream for {video_url}")
+    client, name = path.split('/')
+    return (f'{STREAM_HOST}/OnDemand/_definst_/'
+            f'mp4:archive/{client}/{name}/chunklist.m3u8')
+
+
+def select_segments(playlist, playlist_url, start, end):
+    """Return the URLs of the segments overlapping [start, end).
+
+    A segment is kept whole, so the result covers at least the requested
+    range and at most one segment more at each end.
+    """
+    urls = []
+    elapsed = 0.0
+    duration = None
+    for line in playlist.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        match = SEGMENT_DURATION_RE.match(line)
+        if match:
+            duration = float(match.group(1))
+            continue
+        if line.startswith('#') or duration is None:
+            continue
+        segment_start, segment_end = elapsed, elapsed + duration
+        elapsed = segment_end
+        duration = None
+        if segment_end > start and (end is None or segment_start < end):
+            urls.append(urllib.parse.urljoin(playlist_url, line))
+    return urls
+
+
+def download_segment(url, i, num_segments, verbose, progress=None):
+    """Download one stream segment whole."""
+    response = requests.get(url, headers={"User-Agent": USER_AGENT})
+    response.raise_for_status()
+    if verbose:
+        _log(f'Downloaded segment {i} of {num_segments}', progress)
+    if progress is not None:
+        progress.update(1)
+    return response.content
+
+
+def download_segments(urls, num_threads, output_file, verbose=False,
+                      progress_sink=None):
+    """Fetch stream segments in parallel and write them in playlist order.
+
+    Segments have no length until they arrive, so unlike a byte-range
+    download the bar counts segments rather than bytes.
+    """
+    progress = None
+    executor = concurrent.futures.ThreadPoolExecutor(max_workers=num_threads)
+    try:
+        if progress_sink is not None:
+            progress = tqdm(total=len(urls), unit='seg', file=progress_sink,
+                            disable=None,
+                            desc=os.path.basename(output_file))
+        futures = [
+            executor.submit(download_segment, url, i, len(urls), verbose,
+                            progress)
+            for i, url in enumerate(urls, start=1)]
+        try:
+            with open(output_file, "wb") as f:
+                for future in futures:
+                    f.write(future.result())
+        except BaseException:
+            executor.shutdown(wait=False, cancel_futures=True)
+            raise
+    finally:
+        executor.shutdown(wait=True)
+        if progress is not None:
+            progress.close()
+
+
+def remux_to_mp4(source, destination):
+    """Rewrap a .ts as .mp4 without re-encoding. False if ffmpeg is absent."""
+    if shutil.which('ffmpeg') is None:
+        return False
+    result = subprocess.run(
+        ['ffmpeg', '-y', '-v', 'error', '-i', source, '-c', 'copy',
+         destination],
+        capture_output=True)
+    return result.returncode == 0
 
 
 def _recording_date(page_url, view_id, clip_id):
@@ -242,6 +362,38 @@ def download_video(url, chunk_size, num_threads, output_file, verbose=False,
             progress.close()
 
 
+def download_range(url, start, end, num_threads, output_file, verbose=False,
+                   progress_sink=None):
+    """Download only the part of a video between two times.
+
+    Works off the segmented stream rather than the mp4, because a range of an
+    mp4 cannot be cut out by byte offsets alone. Returns the file written,
+    which is the .ts rather than the requested .mp4 if ffmpeg is unavailable.
+    """
+    playlist_url = chunklist_url(url)
+    response = requests.get(playlist_url, headers={"User-Agent": USER_AGENT},
+                            timeout=PLAYLIST_TIMEOUT)
+    response.raise_for_status()
+    segments = select_segments(response.text, playlist_url, start, end)
+    if not segments:
+        raise SystemExit(f"no video found in {range_suffix(start, end)}")
+
+    stem, extension = os.path.splitext(output_file)
+    stream_file = f'{stem}.ts'
+    download_segments(segments, num_threads, stream_file, verbose,
+                      progress_sink=progress_sink)
+    if extension != '.mp4':
+        return stream_file
+
+    mp4_file = f'{stem}.mp4'
+    if remux_to_mp4(stream_file, mp4_file):
+        os.remove(stream_file)
+        return mp4_file
+    print(f'ffmpeg was not found, so the download is left as {stream_file}, '
+          f'which plays as it is.', file=sys.stderr)
+    return stream_file
+
+
 def main():
     parser = argparse.ArgumentParser(
         description='Download video file from url in parallel')
@@ -257,6 +409,10 @@ def main():
                         help='Print the current chunk number, total number of chunks and download speed')
     parser.add_argument('--no-progress', action='store_true',
                         help='Do not display the progress bar')
+    parser.add_argument('--start', type=str, default=None,
+                        help='Start of the range to download, as HH:MM:SS, MM:SS or seconds')
+    parser.add_argument('--end', type=str, default=None,
+                        help='End of the range to download, as HH:MM:SS, MM:SS or seconds')
     args = parser.parse_args()
 
     chunk_size = args.chunk_size
@@ -264,9 +420,25 @@ def main():
     output_file = args.output_file or default_output_file
     num_threads = args.num_threads
     verbose = args.verbose
+    progress_sink = None if args.no_progress else sys.stderr
+    start = parse_timecode(args.start) if args.start else None
+    end = parse_timecode(args.end) if args.end else None
+    if end is not None and end <= (start or 0):
+        raise SystemExit("--end must come after --start")
+
     try:
-        download_video(url, chunk_size, num_threads, output_file, verbose,
-                       progress_sink=None if args.no_progress else sys.stderr)
+        if start is None and end is None:
+            download_video(url, chunk_size, num_threads, output_file, verbose,
+                           progress_sink=progress_sink)
+        else:
+            if not args.output_file:
+                # Keep a clip from overwriting the whole meeting.
+                stem, extension = os.path.splitext(output_file)
+                output_file = (f'{stem} {range_suffix(start or 0, end)}'
+                               f'{extension}')
+            output_file = download_range(
+                url, start or 0, end, num_threads, output_file, verbose,
+                progress_sink=progress_sink)
     except KeyboardInterrupt:
         # 130 is the conventional exit code for SIGINT. The partial file is
         # left alone: it is the user's data, not ours to delete.
