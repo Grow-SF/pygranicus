@@ -466,8 +466,7 @@ def _announce_stop(reason, progress=None):
         return
     if progress is not None:
         progress.close()
-    print('\nStopping, letting go of what is already downloading...',
-          file=sys.stderr)
+    print('\nStopping...', file=sys.stderr)
 
 
 def _log(message, progress=None):
