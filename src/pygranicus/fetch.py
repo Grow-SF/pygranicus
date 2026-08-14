@@ -63,14 +63,6 @@ RETRY_BACKOFF = 0.5
 RETRY_ON_STATUS = (429, 500, 502, 503, 504)
 CONNECTION_POOL = 32
 
-# How long to wait on one chunk before looking up. Waiting on a future with no
-# timeout parks in a lock acquire, and a signal delivered to one of the worker
-# threads -- which is where a process-wide SIGINT usually lands once there are
-# a dozen of them -- does not break it. Ctrl-C then goes unnoticed until the
-# wait ends of its own accord. Waiting with a timeout returns to the
-# interpreter regularly, where a pending KeyboardInterrupt is raised.
-INTERRUPT_POLL_INTERVAL = 0.2
-
 # Player pages mark each agenda item with an "index point" carrying the second
 # it starts at. They are the chapters offered by --chapters.
 INDEX_POINT_RE = re.compile(r'<div([^>]*index-point[^>]*)>(.*?)</div>', re.S)
@@ -368,7 +360,7 @@ def download_segments(urls, num_threads, output_file, verbose=False,
         try:
             with open(output_file, "wb") as f:
                 for future in futures:
-                    f.write(_await(future))
+                    f.write(future.result())
         except BaseException as stopped:
             # Say so before the waiting starts: shutdown still has to let go
             # of whatever is mid-flight, and a bar left ticking through that
@@ -461,15 +453,6 @@ def resolve_video_url(url, page=None):
     # Nothing better to go on; fall back to the name the file already has.
     return video_url, os.path.basename(
         urllib.parse.urlparse(video_url).path)
-
-
-def _await(future):
-    """Wait for a future without shutting signals out. See the constant."""
-    while True:
-        try:
-            return future.result(timeout=INTERRUPT_POLL_INTERVAL)
-        except concurrent.futures.TimeoutError:
-            pass
 
 
 def _announce_stop(reason, progress=None):
@@ -605,7 +588,7 @@ def download_video(url, chunk_size, num_threads, output_file, verbose=False,
             try:
                 with open(output_file, "wb") as f:
                     while head is not None:
-                        result = _await(head.data)
+                        result = head.data.result()
                         if verbose:
                             _log(
                                 f'Writing chunk {head.chunk_id} of {num_chunks}',

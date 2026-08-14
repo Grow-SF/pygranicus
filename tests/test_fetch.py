@@ -866,32 +866,3 @@ def test_interrupt_stops_a_chapter_download_promptly(tmp_path, granicus):
         interrupt.cancel()
 
     assert time.monotonic() - started < 3, "interrupt was not acted on"
-
-
-def test_await_returns_the_result(monkeypatch):
-    monkeypatch.setattr(fetch, "INTERRUPT_POLL_INTERVAL", 0.01)
-    with concurrent.futures.ThreadPoolExecutor(1) as pool:
-        assert fetch._await(pool.submit(lambda: "done")) == "done"
-
-
-def test_await_keeps_waiting_past_the_poll_interval(monkeypatch):
-    # The timeout is there to let signals through, not to give up early.
-    monkeypatch.setattr(fetch, "INTERRUPT_POLL_INTERVAL", 0.01)
-
-    def slow():
-        time.sleep(0.05)
-        return "late"
-
-    with concurrent.futures.ThreadPoolExecutor(1) as pool:
-        assert fetch._await(pool.submit(slow)) == "late"
-
-
-def test_await_still_raises_what_the_work_raised(monkeypatch):
-    monkeypatch.setattr(fetch, "INTERRUPT_POLL_INTERVAL", 0.01)
-
-    def boom():
-        raise requests.ConnectionError("no route")
-
-    with concurrent.futures.ThreadPoolExecutor(1) as pool:
-        with pytest.raises(requests.ConnectionError):
-            fetch._await(pool.submit(boom))
