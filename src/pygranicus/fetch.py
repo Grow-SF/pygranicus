@@ -4,6 +4,7 @@ import time
 import os
 import sys
 import concurrent.futures
+import threading
 
 from tqdm import tqdm
 
@@ -39,7 +40,8 @@ class Node:
         self.next = next
 
 
-def download_chunk(url, start, end, i, num_chunks, verbose, progress=None):
+def download_chunk(url, start, end, i, num_chunks, verbose, progress=None,
+                   cancelled=None):
     """Download a chunk of the video.
 
     Note that i and num_chunks are only needed for verbose output
@@ -53,6 +55,10 @@ def download_chunk(url, start, end, i, num_chunks, verbose, progress=None):
         start_time = time.time()
     blocks = []
     for block in response.iter_content(chunk_size=PROGRESS_BLOCK_SIZE):
+        if cancelled is not None and cancelled.is_set():
+            # Raise rather than return: these bytes are a partial chunk and
+            # must never reach the output file.
+            raise concurrent.futures.CancelledError()
         blocks.append(block)
         if progress is not None:
             progress.update(len(block))
@@ -74,6 +80,7 @@ def download_video(url, chunk_size, num_threads, output_file, verbose=False,
     head = None
     current = None
     progress = None
+    cancelled = threading.Event()
     try:
         with concurrent.futures.ThreadPoolExecutor(
                 max_workers=num_threads) as executor:
@@ -111,17 +118,26 @@ def download_video(url, chunk_size, num_threads, output_file, verbose=False,
                     current = current.next
                 current.data = executor.submit(
                     download_chunk, url, start, end, i, num_chunks, verbose,
-                    progress)
+                    progress, cancelled)
 
             # Use `head` instead of `current` so we can free up memory as we write to file
-            with open(output_file, "wb") as f:
-                while head is not None:
-                    result = head.data.result()
-                    if verbose:
-                        _log(f'Writing chunk {head.chunk_id} of {num_chunks}',
-                             progress)
-                    f.write(result)
-                    head = head.next
+            try:
+                with open(output_file, "wb") as f:
+                    while head is not None:
+                        result = head.data.result()
+                        if verbose:
+                            _log(
+                                f'Writing chunk {head.chunk_id} of {num_chunks}',
+                                progress)
+                        f.write(result)
+                        head = head.next
+            except BaseException:
+                # Drop the chunks still queued, and tell the ones already
+                # streaming to stop reading. Without both, the interrupt
+                # downloads the rest of the file before it exits.
+                cancelled.set()
+                executor.shutdown(wait=False, cancel_futures=True)
+                raise
     finally:
         # Closing after the executor's context manager has exited means the
         # pool has drained, so nothing renders after the bar's final line.
@@ -154,8 +170,15 @@ def main():
         output_file = os.path.basename(url)
     num_threads = args.num_threads
     verbose = args.verbose
-    download_video(url, chunk_size, num_threads, output_file, verbose,
-                   progress_sink=None if args.no_progress else sys.stderr)
+    try:
+        download_video(url, chunk_size, num_threads, output_file, verbose,
+                       progress_sink=None if args.no_progress else sys.stderr)
+    except KeyboardInterrupt:
+        # 130 is the conventional exit code for SIGINT. The partial file is
+        # left alone: it is the user's data, not ours to delete.
+        print(f"\nInterrupted. Partial download left at {output_file}",
+              file=sys.stderr)
+        raise SystemExit(130)
 
 
 if __name__ == '__main__':

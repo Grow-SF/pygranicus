@@ -1,5 +1,9 @@
 import io
+import os
+import signal
 import sys
+import threading
+import time
 
 import pytest
 import requests
@@ -226,3 +230,24 @@ def test_cli_no_progress_flag_disables_the_bar(
     fetch.main()
 
     assert stderr.getvalue() == ""
+
+
+def test_interrupt_stops_the_download_promptly(tmp_path, granicus, payload):
+    # A bare Future.result() parks in an untimed lock acquire that SIGINT
+    # cannot break, so the download used to run to completion after Ctrl-C.
+    # Signals are only delivered to the main thread, which is where pytest
+    # runs this, so os.kill on ourselves is a faithful stand-in for Ctrl-C.
+    size = CHUNK * 20
+    server = granicus(payload(size),
+                      delay_ranges={i * CHUNK: 0.5 for i in range(20)})
+    interrupt = threading.Timer(0.3, os.kill, (os.getpid(), signal.SIGINT))
+    interrupt.start()
+    started = time.monotonic()
+    try:
+        with pytest.raises(KeyboardInterrupt):
+            fetch.download_video(server.url, CHUNK, 2,
+                                 str(tmp_path / "out.mp4"))
+    finally:
+        interrupt.cancel()
+
+    assert time.monotonic() - started < 3, "interrupt was not acted on promptly"
