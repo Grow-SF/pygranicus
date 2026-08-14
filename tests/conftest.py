@@ -4,12 +4,68 @@ Every test in this suite runs against this server rather than the network:
 the real host is slow, rate-limited, and serves multi-gigabyte files.
 """
 import http.server
+import os
+import selectors
 import threading
 import time
 
 import pytest
 
 ERROR_PAGE = b"<HTML><H1>403 ERROR</H1>Request blocked.</HTML>"
+
+
+class WakeableHTTPServer(http.server.ThreadingHTTPServer):
+    """A server that stops the moment it is asked, rather than polling to ask.
+
+    socketserver cannot simply block on the listening socket, because its
+    shutdown() only sets a flag: an idle server would never wake to read it.
+    It settles for waking on a timer instead, which costs a wait on every
+    shutdown and a wakeup many times a second the rest of the time -- the
+    standard library says as much in a comment above the loop.
+
+    Watching a pipe alongside the socket lets shutdown() speak up directly, so
+    the wait can block indefinitely and still end at once.
+    """
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self._wake_reader, self._wake_writer = os.pipe()
+        self._closed = False
+        self._stopped = threading.Event()
+        # Set until serving begins, so a shutdown() that arrives first is not
+        # left waiting on a loop that never ran.
+        self._stopped.set()
+
+    def serve_forever(self, poll_interval=None):
+        """Serve until shutdown(). poll_interval is accepted and ignored."""
+        self._stopped.clear()
+        try:
+            with selectors.DefaultSelector() as selector:
+                selector.register(self, selectors.EVENT_READ)
+                selector.register(self._wake_reader, selectors.EVENT_READ)
+                while True:
+                    for key, _ in selector.select():
+                        if key.fileobj is not self:
+                            return
+                        # The same private call socketserver's own loop makes.
+                        self._handle_request_noblock()
+        finally:
+            self._stopped.set()
+
+    def shutdown(self):
+        # Stopping an already-closed server is not an error: the pipe is gone,
+        # and so is the loop that was listening to it.
+        if self._closed:
+            return
+        os.write(self._wake_writer, b"\0")
+        self._stopped.wait()
+
+    def server_close(self):
+        super().server_close()
+        if not self._closed:
+            self._closed = True
+            os.close(self._wake_reader)
+            os.close(self._wake_writer)
 
 
 class FakeGranicus:
@@ -38,14 +94,10 @@ class FakeGranicus:
         self.delay_paths = dict(delay_paths or {})
         self.requests = []
         self._lock = threading.Lock()
-        self._server = http.server.ThreadingHTTPServer(
+        self._server = WakeableHTTPServer(
             ("127.0.0.1", 0), self._make_handler())
-        # serve_forever polls every 0.5s by default, and shutdown() waits for
-        # that loop to come round, so the default costs half a second of
-        # teardown per test.
         self._thread = threading.Thread(
-            target=self._server.serve_forever, kwargs={"poll_interval": 0.01},
-            daemon=True)
+            target=self._server.serve_forever, daemon=True)
         self._thread.start()
 
     @property
