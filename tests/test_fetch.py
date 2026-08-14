@@ -1,4 +1,5 @@
 import ast
+import concurrent.futures
 import io
 import os
 import pathlib
@@ -818,3 +819,79 @@ def test_network_reason_reports_a_status_when_there_is_one():
     error = requests.HTTPError("boom", response=response)
 
     assert fetch._network_reason(error) == "the server answered 503"
+
+
+def test_announce_stop_answers_an_interrupt_at_once(capsys):
+    sink = FakeTTY()
+    bar = __import__("tqdm").tqdm(total=10, file=sink, disable=None)
+
+    fetch._announce_stop(KeyboardInterrupt(), bar)
+
+    assert "Stopping" in capsys.readouterr().err
+    assert bar.disable, "the bar must stop moving"
+
+
+def test_announce_stop_says_nothing_about_other_failures(capsys):
+    # A network fault is reported elsewhere; this must not talk over it.
+    fetch._announce_stop(requests.ConnectionError("boom"), None)
+
+    assert capsys.readouterr().err == ""
+
+
+def test_a_cancelled_segment_yields_no_bytes(granicus):
+    server = granicus(b"", segment_bodies={"/media_0.ts": b"SEGMENT"})
+    cancelled = threading.Event()
+    cancelled.set()
+
+    with pytest.raises(concurrent.futures.CancelledError):
+        fetch.download_segment(f"{server.origin}/media_0.ts", 1, 1,
+                               verbose=False, cancelled=cancelled)
+
+
+def test_interrupt_stops_a_chapter_download_promptly(tmp_path, granicus):
+    # --chapters goes through download_segments, which had no such test:
+    # the byte-range path was covered and this one was not.
+    bodies = {f"/media_{i}.ts": b"x" * 500 for i in range(40)}
+    delays = {f"/media_{i}.ts": 0.1 for i in range(40)}
+    server = granicus(b"", segment_bodies=bodies, delay_paths=delays)
+    urls = [f"{server.origin}/media_{i}.ts" for i in range(40)]
+
+    interrupt = threading.Timer(0.1, os.kill, (os.getpid(), signal.SIGINT))
+    interrupt.start()
+    started = time.monotonic()
+    try:
+        with pytest.raises(KeyboardInterrupt):
+            fetch.download_segments(urls, 4, str(tmp_path / "clip.ts"))
+    finally:
+        interrupt.cancel()
+
+    assert time.monotonic() - started < 3, "interrupt was not acted on"
+
+
+def test_await_returns_the_result(monkeypatch):
+    monkeypatch.setattr(fetch, "INTERRUPT_POLL_INTERVAL", 0.01)
+    with concurrent.futures.ThreadPoolExecutor(1) as pool:
+        assert fetch._await(pool.submit(lambda: "done")) == "done"
+
+
+def test_await_keeps_waiting_past_the_poll_interval(monkeypatch):
+    # The timeout is there to let signals through, not to give up early.
+    monkeypatch.setattr(fetch, "INTERRUPT_POLL_INTERVAL", 0.01)
+
+    def slow():
+        time.sleep(0.05)
+        return "late"
+
+    with concurrent.futures.ThreadPoolExecutor(1) as pool:
+        assert fetch._await(pool.submit(slow)) == "late"
+
+
+def test_await_still_raises_what_the_work_raised(monkeypatch):
+    monkeypatch.setattr(fetch, "INTERRUPT_POLL_INTERVAL", 0.01)
+
+    def boom():
+        raise requests.ConnectionError("no route")
+
+    with concurrent.futures.ThreadPoolExecutor(1) as pool:
+        with pytest.raises(requests.ConnectionError):
+            fetch._await(pool.submit(boom))

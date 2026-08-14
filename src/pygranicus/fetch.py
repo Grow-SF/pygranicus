@@ -63,6 +63,14 @@ RETRY_BACKOFF = 0.5
 RETRY_ON_STATUS = (429, 500, 502, 503, 504)
 CONNECTION_POOL = 32
 
+# How long to wait on one chunk before looking up. Waiting on a future with no
+# timeout parks in a lock acquire, and a signal delivered to one of the worker
+# threads -- which is where a process-wide SIGINT usually lands once there are
+# a dozen of them -- does not break it. Ctrl-C then goes unnoticed until the
+# wait ends of its own accord. Waiting with a timeout returns to the
+# interpreter regularly, where a pending KeyboardInterrupt is raised.
+INTERRUPT_POLL_INTERVAL = 0.2
+
 # Player pages mark each agenda item with an "index point" carrying the second
 # it starts at. They are the chapters offered by --chapters.
 INDEX_POINT_RE = re.compile(r'<div([^>]*index-point[^>]*)>(.*?)</div>', re.S)
@@ -307,15 +315,33 @@ def select_segments(playlist, playlist_url, start, end):
     return urls
 
 
-def download_segment(url, i, num_segments, verbose, progress=None):
-    """Download one stream segment whole."""
-    response = SESSION.get(url, headers={"User-Agent": USER_AGENT})
+def download_segment(url, i, num_segments, verbose, progress=None,
+                     cancelled=None):
+    """Download one stream segment.
+
+    Read in blocks rather than whole so that an interrupt can stop it partway,
+    as it already can for a byte-range chunk.
+    """
+    if cancelled is not None and cancelled.is_set():
+        # Checked before the request as well as during it: a request that has
+        # begun holds its worker until it finishes or gives up retrying, and
+        # stopping waits on every worker.
+        raise concurrent.futures.CancelledError()
+    response = SESSION.get(url, headers={"User-Agent": USER_AGENT},
+                           stream=True)
     response.raise_for_status()
+    blocks = []
+    for block in response.iter_content(chunk_size=PROGRESS_BLOCK_SIZE):
+        if cancelled is not None and cancelled.is_set():
+            # Raise rather than return: these bytes are half a segment and
+            # must never reach the output file.
+            raise concurrent.futures.CancelledError()
+        blocks.append(block)
     if verbose:
         _log(f'Downloaded segment {i} of {num_segments}', progress)
     if progress is not None:
         progress.update(1)
-    return response.content
+    return b"".join(blocks)
 
 
 def download_segments(urls, num_threads, output_file, verbose=False,
@@ -334,15 +360,22 @@ def download_segments(urls, num_threads, output_file, verbose=False,
                             desc=progress_description(
                                 f'Downloading '
                                 f'{os.path.basename(output_file)}'))
+        cancelled = threading.Event()
         futures = [
             executor.submit(download_segment, url, i, len(urls), verbose,
-                            progress)
+                            progress, cancelled)
             for i, url in enumerate(urls, start=1)]
         try:
             with open(output_file, "wb") as f:
                 for future in futures:
-                    f.write(future.result())
-        except BaseException:
+                    f.write(_await(future))
+        except BaseException as stopped:
+            # Say so before the waiting starts: shutdown still has to let go
+            # of whatever is mid-flight, and a bar left ticking through that
+            # reads as though the interrupt was missed.
+            _announce_stop(stopped, progress)
+            progress = None
+            cancelled.set()
             executor.shutdown(wait=False, cancel_futures=True)
             raise
     finally:
@@ -428,6 +461,30 @@ def resolve_video_url(url, page=None):
     # Nothing better to go on; fall back to the name the file already has.
     return video_url, os.path.basename(
         urllib.parse.urlparse(video_url).path)
+
+
+def _await(future):
+    """Wait for a future without shutting signals out. See the constant."""
+    while True:
+        try:
+            return future.result(timeout=INTERRUPT_POLL_INTERVAL)
+        except concurrent.futures.TimeoutError:
+            pass
+
+
+def _announce_stop(reason, progress=None):
+    """Acknowledge an interrupt at once, and still the progress bar.
+
+    What follows is a wait on whatever is already downloading. A bar left
+    ticking through that looks like the interrupt was missed, which is how it
+    earns a second one.
+    """
+    if not isinstance(reason, KeyboardInterrupt):
+        return
+    if progress is not None:
+        progress.close()
+    print('\nStopping, letting go of what is already downloading...',
+          file=sys.stderr)
 
 
 def _log(message, progress=None):
@@ -548,17 +605,19 @@ def download_video(url, chunk_size, num_threads, output_file, verbose=False,
             try:
                 with open(output_file, "wb") as f:
                     while head is not None:
-                        result = head.data.result()
+                        result = _await(head.data)
                         if verbose:
                             _log(
                                 f'Writing chunk {head.chunk_id} of {num_chunks}',
                                 progress)
                         f.write(result)
                         head = head.next
-            except BaseException:
+            except BaseException as stopped:
                 # Drop the chunks still queued, and tell the ones already
                 # streaming to stop reading. Without both, the interrupt
                 # downloads the rest of the file before it exits.
+                _announce_stop(stopped, progress)
+                progress = None
                 cancelled.set()
                 executor.shutdown(wait=False, cancel_futures=True)
                 raise
