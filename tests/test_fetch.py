@@ -138,3 +138,15 @@ def test_output_file_flag_overrides_the_basename(
 
     assert (tmp_path / "custom.mp4").read_bytes() == data
     assert not (tmp_path / "video.mp4").exists()
+
+
+def test_downloads_file_smaller_than_one_chunk(tmp_path, granicus, payload):
+    # range(file_size // chunk_size) is range(0) for a file below one chunk,
+    # leaving no chunks for the final-chunk fixup to extend.
+    data = payload(5_000)
+    server = granicus(data)
+    out = tmp_path / "out.mp4"
+
+    fetch.download_video(server.url, CHUNK * 10, 4, str(out))
+
+    assert out.read_bytes() == data

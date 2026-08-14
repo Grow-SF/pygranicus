@@ -56,8 +56,12 @@ def download_video(url, chunk_size, num_threads, output_file, verbose=False):
         # which would otherwise be mistaken for the size of the video.
         response.raise_for_status()
         file_size = int(response.headers["Content-Length"])
+        # At least one chunk, so a file smaller than chunk_size still gets
+        # downloaded rather than leaving `chunks` empty. The final chunk is
+        # then stretched to the end of the file.
+        num_whole_chunks = max(1, file_size // chunk_size)
         chunks = [(i * chunk_size, (i + 1) * chunk_size - 1)
-                  for i in range(file_size//chunk_size)]
+                  for i in range(num_whole_chunks)]
         chunks[-1] = (chunks[-1][0], file_size - 1)
 
         i = 0
