@@ -98,7 +98,12 @@ pygranicus "https://archive-video.granicus.com/video/file/here.mp4" --verbose
 ```sh
 uv sync            # create the venv, including dev dependencies
 uv run pygranicus --help
+uv run pytest      # run the tests
 ```
+
+The tests run against a local stand-in for Granicus rather than the real site,
+so they need no network and take about two seconds. `uv run pytest -k chapter`
+runs a subset; `--durations=10` shows what is slowest.
 
 Dependencies are declared in `pyproject.toml` and pinned in `uv.lock`; both are
 committed. This project used pipenv before v1.0.0.
