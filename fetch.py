@@ -9,6 +9,12 @@ CHUNK_SIZE = 32 * 1024 * 1024  # 8 MiB
 OUTPUT_FILE = None
 NUM_THREADS = os.cpu_count()
 
+# Granicus fronts its videos with CloudFront, which blocks the default
+# `python-requests/x.y.z` User-Agent with a 403. Identify as a browser.
+USER_AGENT = ('Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) '
+              'AppleWebKit/537.36 (KHTML, like Gecko) '
+              'Chrome/120.0.0.0 Safari/537.36')
+
 
 class Node:
     def __init__(self, chunk_id, data=None, next=None):
@@ -22,8 +28,10 @@ def download_chunk(url, start, end, i, num_chunks, verbose):
 
     Note that i and num_chunks are only needed for verbose output
     """
-    headers = {"Range": f"bytes={start}-{end}"}
+    headers = {"Range": f"bytes={start}-{end}", "User-Agent": USER_AGENT}
     response = requests.get(url, headers=headers, stream=True)
+    # Without this a rejected chunk writes the error page into the video file
+    response.raise_for_status()
     if verbose:
         print(f'Downloading chunk {i} of {num_chunks}')
         start_time = time.time()
@@ -43,7 +51,10 @@ def download_video(url, chunk_size, num_threads, output_file, verbose=False):
     head = None
     current = None
     with concurrent.futures.ThreadPoolExecutor(max_workers=num_threads) as executor:
-        response = requests.head(url)
+        response = requests.head(url, headers={"User-Agent": USER_AGENT})
+        # A rejected HEAD still carries a Content-Length (of the error page),
+        # which would otherwise be mistaken for the size of the video.
+        response.raise_for_status()
         file_size = int(response.headers["Content-Length"])
         chunks = [(i * chunk_size, (i + 1) * chunk_size - 1)
                   for i in range(file_size//chunk_size)]
