@@ -1,6 +1,5 @@
 import argparse
 import requests
-import datetime
 import html
 import re
 import time
@@ -40,7 +39,8 @@ TITLE_RE = re.compile(r'<title>(.*?)</title>', re.IGNORECASE | re.DOTALL)
 # page for the body that met, which is keyed by view_id -- so the date can
 # only be found when the pasted URL carries one.
 VIEW_ID_RE = re.compile(r'[?&]view_id=(\d+)')
-EPOCH_RE = re.compile(r'\b(1[0-9]{9})\b')
+# Listing rows print the meeting date as mm/dd/yy.
+LISTING_DATE_RE = re.compile(r'\b(\d{2})/(\d{2})/(\d{2})\b')
 # How far back from a clip's link to look for its row's timestamp.
 LISTING_ROW_SPAN = 1500
 LISTING_TIMEOUT = 30
@@ -74,13 +74,10 @@ def _recording_date(page_url, view_id, clip_id):
     page = response.text
     for match in re.finditer(rf'clip_id={clip_id}\b', page):
         row = page[max(0, match.start() - LISTING_ROW_SPAN):match.start()]
-        stamps = EPOCH_RE.findall(row)
-        if stamps:
-            # Granicus records the meeting at local midnight, which lands on
-            # the same calendar day in UTC for every US timezone.
-            moment = datetime.datetime.fromtimestamp(
-                int(stamps[-1]), datetime.timezone.utc)
-            return moment.strftime('%Y-%m-%d')
+        dates = LISTING_DATE_RE.findall(row)
+        if dates:
+            month, day, year = dates[-1]
+            return f'20{year}-{month}-{day}'
     return None
 
 

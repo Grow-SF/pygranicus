@@ -321,7 +321,7 @@ def test_titles_are_made_safe_for_the_filesystem(granicus):
 # page and as the view listing that the date is looked up in.
 PAGE_WITH_LISTING_ROW = PLAYER_PAGE.replace(
     b"</body>",
-    b"""<tr><td>1662966000</td><td>09/12/22</td>
+    b"""<tr><td>09/12/22</td>
 <td><a href="MediaPlayer.php?view_id=13&clip_id=42000">Video</a></td></tr>
 </body>""")
 
