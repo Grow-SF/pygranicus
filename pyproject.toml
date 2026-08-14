@@ -1,0 +1,21 @@
+[project]
+name = "pygranicus"
+version = "1.0.0"
+description = "Download Granicus video files efficiently"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { file = "LICENSE" }
+dependencies = ["requests"]
+
+[project.urls]
+Homepage = "https://github.com/Grow-SF/pygranicus"
+
+[project.scripts]
+pygranicus = "pygranicus.fetch:main"
+
+[dependency-groups]
+dev = ["autopep8", "ipython"]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
