@@ -25,6 +25,35 @@ uv run pygranicus "https://archive-video.granicus.com/video/file/here.mp4" --ver
 
 Use `-o` to choose the filename yourself.
 
+## Picking agenda items
+
+Meetings are indexed by agenda item. `--chapters` lists them and lets you tick
+the ones you want:
+
+```sh
+uv run pygranicus "https://sanfrancisco.granicus.com/player/clip/42000?view_id=13" --chapters
+```
+
+```
+? Select chapters to download  (space to toggle, enter to confirm)
+  ○ 0h00m14s     6m01s    ~92.1MB  11 ROLL CALL AND ANNOUNCEMENTS
+  ○ 0h06m15s     1m35s    ~24.2MB  220848 Appointment, Treasury Oversight
+❯ ◉ 0h07m50s     3m32s    ~54.1MB  220946 Appointment, Children and Youth
+  ○ 0h11m22s    14m39s     ~224MB  220427 Administrative Code - Veterans
+```
+
+Each item shows when it starts, how long it runs, and roughly how much it will
+cost to download. The size is the meeting's average rate over the item's
+length, so it is an estimate rather than a promise — measured within a few
+percent in practice.
+
+Nothing is selected to begin with, so you opt in to each item and an accidental
+return downloads nothing. Each item you tick is saved as its own file, named
+after the agenda item, and only the video for that item is fetched.
+
+This needs a terminal to ask you in, so it will not run with input redirected
+or under CI.
+
 ## Downloading part of a meeting
 
 Meetings run for hours. To take a slice of one, give `--start` and `--end` as

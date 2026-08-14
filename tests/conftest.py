@@ -40,8 +40,12 @@ class FakeGranicus:
         self._lock = threading.Lock()
         self._server = http.server.ThreadingHTTPServer(
             ("127.0.0.1", 0), self._make_handler())
+        # serve_forever polls every 0.5s by default, and shutdown() waits for
+        # that loop to come round, so the default costs half a second of
+        # teardown per test.
         self._thread = threading.Thread(
-            target=self._server.serve_forever, daemon=True)
+            target=self._server.serve_forever, kwargs={"poll_interval": 0.01},
+            daemon=True)
         self._thread.start()
 
     @property
