@@ -520,3 +520,18 @@ def test_spans_read_as_minutes_and_seconds():
     assert fetch.format_span(95) == "1m35s"
     assert fetch.format_span(3725) == "1h02m05s"
     assert fetch.format_span(None) == "?"
+
+
+def test_meeting_size_reports_length_and_bytes(granicus):
+    server = granicus(b"x" * 5000)
+
+    seconds, total_bytes = fetch.meeting_size(
+        server.url, playlist="#EXTINF:2.0,\na.ts\n#EXTINF:1.5,\nb.ts\n")
+
+    assert (seconds, total_bytes) == (3.5, 5000)
+
+
+def test_meeting_size_gives_up_quietly_when_it_cannot_measure():
+    # Estimating is a nicety; failing to must not stop anything.
+    assert fetch.meeting_size("http://127.0.0.1:9/video.mp4",
+                              playlist="#EXTINF:2.0,\na.ts\n") == (None, None)

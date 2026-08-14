@@ -72,6 +72,28 @@ def _safe_filename(text):
     return ' '.join(text.split())[:MAX_TITLE_LENGTH].strip()
 
 
+def is_media_url(url):
+    """True when the URL already points at the file, not at a page about it."""
+    return urllib.parse.urlparse(url).path.endswith('.mp4')
+
+
+def fetch_page(url):
+    """Read a page once, so its callers can share the one copy."""
+    response = requests.get(url, headers={"User-Agent": USER_AGENT},
+                            timeout=LISTING_TIMEOUT)
+    response.raise_for_status()
+    return response.text
+
+
+def fetch_playlist(video_url):
+    """Read the stream's segment playlist."""
+    response = requests.get(chunklist_url(video_url),
+                            headers={"User-Agent": USER_AGENT},
+                            timeout=PLAYLIST_TIMEOUT)
+    response.raise_for_status()
+    return response.text
+
+
 def parse_chapters(page):
     """Return [(start second, title)] for the agenda items a page lists."""
     chapters = []
@@ -137,20 +159,7 @@ def chapter_filename(output_file, title):
     return f'{stem} {safe}{extension}'
 
 
-def chapters_for(page_url):
-    """Fetch a player page and return the chapters it lists.
-
-    This reads the page a second time -- resolve_video_url does not hand back
-    the HTML it parsed -- which is a few tens of kilobytes against a download
-    measured in megabytes.
-    """
-    response = requests.get(page_url, headers={"User-Agent": USER_AGENT},
-                            timeout=LISTING_TIMEOUT)
-    response.raise_for_status()
-    return parse_chapters(response.text)
-
-
-def meeting_size(video_url):
+def meeting_size(video_url, playlist=None):
     """Return (seconds, bytes) for the whole meeting, or (None, None).
 
     Used only to measure chapters, so a failure costs the estimate rather
@@ -161,12 +170,9 @@ def meeting_size(video_url):
                              timeout=LISTING_TIMEOUT)
         head.raise_for_status()
         total_bytes = int(head.headers["Content-Length"])
-        playlist = requests.get(chunklist_url(video_url),
-                                headers={"User-Agent": USER_AGENT},
-                                timeout=PLAYLIST_TIMEOUT)
-        playlist.raise_for_status()
-        seconds = sum(float(x)
-                      for x in SEGMENT_DURATION_RE.findall(playlist.text))
+        if playlist is None:
+            playlist = fetch_playlist(video_url)
+        seconds = sum(float(x) for x in SEGMENT_DURATION_RE.findall(playlist))
     except (requests.RequestException, KeyError, ValueError):
         return None, None
     return (seconds or None), total_bytes
@@ -324,20 +330,21 @@ def _recording_date(page_url, view_id, clip_id):
     return None
 
 
-def resolve_video_url(url):
+def resolve_video_url(url, page=None):
     """Resolve a Granicus player URL to (video url, default filename).
 
     A URL that already points at a media file is returned untouched, so
-    pasting a direct .mp4 link costs no extra request.
+    pasting a direct .mp4 link costs no extra request. `page` lets a caller
+    that has already read the page hand it over rather than have it read
+    twice.
     """
-    if urllib.parse.urlparse(url).path.endswith('.mp4'):
+    if is_media_url(url):
         return url, os.path.basename(urllib.parse.urlparse(url).path)
 
-    response = requests.get(url, headers={"User-Agent": USER_AGENT})
-    # A clip id that does not exist is a clean 404, which says so far better
-    # than anything we could infer from the page body.
-    response.raise_for_status()
-    page = response.text
+    if page is None:
+        # A clip id that does not exist is a clean 404, which says so far
+        # better than anything we could infer from the page body.
+        page = fetch_page(url)
 
     match = VIDEO_URL_RE.search(page)
     if match is None:
@@ -486,7 +493,7 @@ def download_video(url, chunk_size, num_threads, output_file, verbose=False,
 
 
 def download_range(url, start, end, num_threads, output_file, verbose=False,
-                   progress_sink=None):
+                   progress_sink=None, playlist=None):
     """Download only the part of a video between two times.
 
     Works off the segmented stream rather than the mp4, because a range of an
@@ -494,10 +501,9 @@ def download_range(url, start, end, num_threads, output_file, verbose=False,
     which is the .ts rather than the requested .mp4 if ffmpeg is unavailable.
     """
     playlist_url = chunklist_url(url)
-    response = requests.get(playlist_url, headers={"User-Agent": USER_AGENT},
-                            timeout=PLAYLIST_TIMEOUT)
-    response.raise_for_status()
-    segments = select_segments(response.text, playlist_url, start, end)
+    if playlist is None:
+        playlist = fetch_playlist(url)
+    segments = select_segments(playlist, playlist_url, start, end)
     if not segments:
         raise SystemExit(f"no video found in {range_suffix(start, end)}")
 
@@ -541,7 +547,11 @@ def main():
     args = parser.parse_args()
 
     chunk_size = args.chunk_size
-    url, default_output_file = resolve_video_url(args.url)
+    # --chapters wants the page too, so read it once and share it.
+    page = None
+    if args.chapters and not is_media_url(args.url):
+        page = fetch_page(args.url)
+    url, default_output_file = resolve_video_url(args.url, page=page)
     output_file = args.output_file or default_output_file
     num_threads = args.num_threads
     verbose = args.verbose
@@ -557,10 +567,15 @@ def main():
     if args.chapters:
         if not sys.stdin.isatty():
             raise SystemExit("--chapters needs a terminal to ask you in")
-        chapters = chapters_for(args.url)
+        if page is None:
+            raise SystemExit("--chapters needs the address of a player page, "
+                             "not a link straight to the video")
+        chapters = parse_chapters(page)
         if not chapters:
             raise SystemExit(f"{args.url} lists no agenda items")
-        total_seconds, total_bytes = meeting_size(url)
+        # Read once here and hand to every chapter downloaded below.
+        playlist = fetch_playlist(url)
+        total_seconds, total_bytes = meeting_size(url, playlist=playlist)
         rows = chapter_rows(chapters, total_seconds, total_bytes)
         picked = choose_chapters(rows)
         if not picked:
@@ -572,7 +587,7 @@ def main():
                 written = download_range(
                     url, chapter_start, chapter_end, num_threads,
                     chapter_filename(output_file, title), verbose,
-                    progress_sink=progress_sink)
+                    progress_sink=progress_sink, playlist=playlist)
                 print(f'Wrote {written}', file=sys.stderr)
         except KeyboardInterrupt:
             print("\nInterrupted.", file=sys.stderr)
