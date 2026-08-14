@@ -438,12 +438,12 @@ def _log(message, progress=None):
         tqdm.write(message, file=progress.fp)
 
 
-def build_session(pool_size=CONNECTION_POOL, attempts=RETRY_ATTEMPTS):
+def build_session(pool_size=CONNECTION_POOL):
     """A session that reuses connections and rides out transient failures."""
     session = requests.Session()
     session.headers['User-Agent'] = USER_AGENT
     retries = requests.adapters.Retry(
-        total=attempts, backoff_factor=RETRY_BACKOFF,
+        total=RETRY_ATTEMPTS, backoff_factor=RETRY_BACKOFF,
         status_forcelist=RETRY_ON_STATUS,
         allowed_methods=('GET', 'HEAD'))
     adapter = requests.adapters.HTTPAdapter(

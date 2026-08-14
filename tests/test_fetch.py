@@ -351,13 +351,15 @@ def test_falls_back_to_the_clip_id_when_the_view_has_no_date_for_it(granicus):
     assert name == "BOS Rules Committee-42000.mp4"
 
 
-def test_an_unreachable_listing_yields_no_date_rather_than_raising(monkeypatch):
+def test_a_listing_that_cannot_be_read_yields_no_date(monkeypatch):
     # The date is a nicety. Failing to find it must never stop a download.
-    # No retries here: this failure is the point, so waiting out the backoff
-    # would only make the suite slow.
-    monkeypatch.setattr(fetch, "SESSION", fetch.build_session(attempts=0))
+    def refuse(*args, **kwargs):
+        raise requests.ConnectionError("no route to host")
+
+    monkeypatch.setattr(fetch.SESSION, "get", refuse)
+
     assert fetch._recording_date(
-        "http://127.0.0.1:9/player/clip/42000", "13", "42000") is None
+        "https://example.test/player/clip/42000", "13", "42000") is None
 
 
 CHUNKLIST = b"""#EXTM3U
@@ -541,8 +543,12 @@ def test_meeting_size_reports_length_and_bytes(granicus):
 
 def test_meeting_size_gives_up_quietly_when_it_cannot_measure(monkeypatch):
     # Estimating is a nicety; failing to must not stop anything.
-    monkeypatch.setattr(fetch, "SESSION", fetch.build_session(attempts=0))
-    assert fetch.meeting_size("http://127.0.0.1:9/video.mp4",
+    def refuse(*args, **kwargs):
+        raise requests.ConnectionError("no route to host")
+
+    monkeypatch.setattr(fetch.SESSION, "head", refuse)
+
+    assert fetch.meeting_size("https://example.test/video.mp4",
                               playlist="#EXTINF:2.0,\na.ts\n") == (None, None)
 
 
