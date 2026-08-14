@@ -748,3 +748,35 @@ def test_chapter_choice_label_keeps_the_measurements():
     assert "1m35s" in label
     assert "25.0MB" in label
     assert "Short item" in label
+
+
+def test_the_picker_stops_prompt_toolkit_asking_for_the_cursor(monkeypatch):
+    # Warp never answers that question, and the prompt then renders in the
+    # wrong place or takes over the window.
+    import questionary
+    monkeypatch.delenv("PROMPT_TOOLKIT_NO_CPR", raising=False)
+
+    class Prompt:
+        def ask(self):
+            return []
+
+    monkeypatch.setattr(questionary, "checkbox",
+                        lambda message, choices: Prompt())
+    fetch.choose_chapters([(0, 10, 100, "an item")])
+
+    assert os.environ["PROMPT_TOOLKIT_NO_CPR"] == "1"
+
+
+def test_the_picker_leaves_an_existing_cursor_setting_alone(monkeypatch):
+    import questionary
+    monkeypatch.setenv("PROMPT_TOOLKIT_NO_CPR", "0")
+
+    class Prompt:
+        def ask(self):
+            return []
+
+    monkeypatch.setattr(questionary, "checkbox",
+                        lambda message, choices: Prompt())
+    fetch.choose_chapters([(0, 10, 100, "an item")])
+
+    assert os.environ["PROMPT_TOOLKIT_NO_CPR"] == "0"

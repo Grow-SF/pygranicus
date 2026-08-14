@@ -226,6 +226,12 @@ def meeting_size(video_url, playlist=None):
 
 def choose_chapters(rows):
     """Ask which chapters to download. Nothing is selected to begin with."""
+    # prompt_toolkit places an inline prompt by asking the terminal where the
+    # cursor is. Warp never answers (warpdotdev/warp#7739), and the prompt
+    # then renders part-way down the screen or takes the window over. Telling
+    # prompt_toolkit not to ask makes the placement deterministic. Read when
+    # the prompt is built, so setting it here is in time.
+    os.environ.setdefault('PROMPT_TOOLKIT_NO_CPR', '1')
     import questionary
     choices = [questionary.Choice(title=chapter_choice_label(row), value=index)
                for index, row in enumerate(rows)]
