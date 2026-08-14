@@ -1,4 +1,7 @@
 # pygranicus
+
+[![tests](https://github.com/Grow-SF/pygranicus/actions/workflows/tests.yml/badge.svg)](https://github.com/Grow-SF/pygranicus/actions/workflows/tests.yml)
+
 Download granicus video files efficiently
 
 # Usage
