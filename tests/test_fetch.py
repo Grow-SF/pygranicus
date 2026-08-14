@@ -866,3 +866,15 @@ def test_interrupt_stops_a_chapter_download_promptly(tmp_path, granicus):
         interrupt.cancel()
 
     assert time.monotonic() - started < 3, "interrupt was not acted on"
+
+
+def test_the_fixture_server_stops_without_waiting_on_a_poll(granicus):
+    # Every test pays this on teardown. Polling for a shutdown flag cost half
+    # a second each, which was most of the suite's runtime.
+    server = granicus(b"")
+
+    started = time.monotonic()
+    server.shutdown()
+    elapsed = time.monotonic() - started
+
+    assert elapsed < 0.1, f"shutdown waited {elapsed:.3f}s"
