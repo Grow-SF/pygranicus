@@ -701,3 +701,50 @@ def test_log_goes_through_the_bar_when_one_is_active():
     bar.close()
 
     assert "a line" in sink.getvalue()
+
+
+def test_terminal_width_always_answers():
+    assert fetch.terminal_width() > 0
+
+
+def test_fit_leaves_text_that_already_fits():
+    assert fetch.fit("short", 20) == "short"
+
+
+def test_fit_shows_where_it_cut():
+    cut = fetch.fit("x" * 30, 10)
+
+    assert cut == "xxxxxxx..." and len(cut) == 10
+
+
+def test_progress_description_leaves_room_for_the_bar():
+    # A long filename used to fill the line and leave no bar at all.
+    desc = fetch.progress_description("Downloading " + "x" * 200, width=80)
+
+    assert len(desc) == 80 - fetch.PROGRESS_BAR_RESERVE
+    assert desc.endswith("...")
+
+
+def test_progress_description_keeps_a_readable_minimum():
+    desc = fetch.progress_description("Downloading " + "x" * 200, width=10)
+
+    assert len(desc) == fetch.MIN_DESCRIPTION
+
+
+def test_chapter_choice_label_fits_on_one_line():
+    row = (375, 95, 25 * 1024 * 1024, "A very long agenda item title " * 6)
+
+    label = fetch.chapter_choice_label(row, width=80)
+
+    assert len(label) + fetch.CHOICE_FURNITURE <= 80
+
+
+def test_chapter_choice_label_keeps_the_measurements():
+    row = (375, 95, 25 * 1024 * 1024, "Short item")
+
+    label = fetch.chapter_choice_label(row, width=80)
+
+    assert "0h06m15s" in label
+    assert "1m35s" in label
+    assert "25.0MB" in label
+    assert "Short item" in label

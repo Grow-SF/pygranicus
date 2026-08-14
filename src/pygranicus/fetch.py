@@ -61,6 +61,13 @@ INDEX_TIME_RE = re.compile(r'time="(\d+)"')
 TAG_RE = re.compile(r'<[^>]+>')
 # Leaves room for the meeting name a chapter file hangs off.
 MAX_CHAPTER_TITLE = 120
+
+# Room a progress bar needs for the bar itself, the rate, and the timings.
+# Whatever is left over is what the description may use.
+PROGRESS_BAR_RESERVE = 46
+MIN_DESCRIPTION = 20
+# Furniture questionary puts before each row: pointer, checkbox, spacing.
+CHOICE_FURNITURE = 6
 UNSAFE_FILENAME_RE = re.compile(r'[/\\:*?"<>|\x00-\x1f]')
 # Leaves room for the clip id and extension inside the usual 255-byte limit.
 MAX_TITLE_LENGTH = 150
@@ -92,6 +99,45 @@ def fetch_playlist(video_url):
                             timeout=PLAYLIST_TIMEOUT)
     response.raise_for_status()
     return response.text
+
+
+def terminal_width(fallback=80):
+    return shutil.get_terminal_size(fallback=(fallback, 24)).columns
+
+
+def fit(text, width):
+    """Shorten text to width, showing that it was cut."""
+    if width <= 0:
+        return ''
+    if len(text) <= width:
+        return text
+    if width <= 3:
+        return text[:width]
+    return text[:width - 3] + '...'
+
+
+def progress_description(label, width=None):
+    """Trim a label so the progress bar it labels still has room to draw.
+
+    A long filename otherwise fills the line and the bar disappears
+    altogether.
+    """
+    width = width if width is not None else terminal_width()
+    return fit(label, max(MIN_DESCRIPTION, width - PROGRESS_BAR_RESERVE))
+
+
+def chapter_choice_label(row, width=None):
+    """One line describing a chapter, sized to fit on one line.
+
+    Rows that wrap cost the picker several lines each, which is how it came
+    to take over the whole window.
+    """
+    width = width if width is not None else terminal_width()
+    start, seconds, size, title = row
+    estimate = f'~{tqdm.format_sizeof(size, "B", 1024)}' if size else '?'
+    prefix = (f'{range_suffix(start, None)[:-4]}  '
+              f'{format_span(seconds):>8}  {estimate:>9}  ')
+    return prefix + fit(title, width - len(prefix) - CHOICE_FURNITURE)
 
 
 def parse_chapters(page):
@@ -181,13 +227,8 @@ def meeting_size(video_url, playlist=None):
 def choose_chapters(rows):
     """Ask which chapters to download. Nothing is selected to begin with."""
     import questionary
-    choices = []
-    for index, (start, seconds, size, title) in enumerate(rows):
-        estimate = f'~{tqdm.format_sizeof(size, "B", 1024)}' if size else '?'
-        choices.append(questionary.Choice(
-            title=(f'{range_suffix(start, None)[:-4]}  '
-                   f'{format_span(seconds):>8}  {estimate:>9}  {title}'),
-            value=index))
+    choices = [questionary.Choice(title=chapter_choice_label(row), value=index)
+               for index, row in enumerate(rows)]
     picked = questionary.checkbox(
         'Select chapters to download', choices=choices).ask()
     return picked or []
@@ -275,7 +316,9 @@ def download_segments(urls, num_threads, output_file, verbose=False,
         if progress_sink is not None:
             progress = tqdm(total=len(urls), unit='seg', file=progress_sink,
                             disable=None,
-                            desc=os.path.basename(output_file))
+                            desc=progress_description(
+                                f'Downloading '
+                                f'{os.path.basename(output_file)}'))
         futures = [
             executor.submit(download_segment, url, i, len(urls), verbose,
                             progress)
