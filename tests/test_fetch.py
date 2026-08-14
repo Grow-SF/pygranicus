@@ -196,19 +196,6 @@ def test_contents_are_byte_exact_with_progress_enabled(
     assert out.read_bytes() == data
 
 
-def test_verbose_lines_still_appear_while_a_bar_is_active(
-        tmp_path, granicus, payload):
-    # Verbose output must survive being routed through _log rather than
-    # print() when a bar exists.
-    server = granicus(payload(50_000))
-    sink = FakeTTY()
-
-    fetch.download_video(server.url, CHUNK, 4, str(tmp_path / "out.mp4"),
-                         verbose=True, progress_sink=sink)
-
-    assert "Downloading chunk" in sink.getvalue()
-
-
 def test_cli_shows_the_bar_by_default_on_a_terminal(
         tmp_path, granicus, payload, monkeypatch):
     server = granicus(payload(50_000))
@@ -441,7 +428,7 @@ def test_downloads_segments_in_order(tmp_path, granicus):
 
     fetch.download_segments(
         [f"{server.origin}/media_{i}.ts" for i in range(3)],
-        4, str(out), verbose=False)
+        4, str(out))
 
     assert out.read_bytes() == b"AAAABBBBCCCC"
 
@@ -588,10 +575,10 @@ def test_fetch_playlist_reads_the_chunklist(granicus, monkeypatch):
 
 
 def test_node_links_to_the_next_one():
-    tail = fetch.Node(2)
-    head = fetch.Node(1, data="first", next=tail)
+    tail = fetch.Node()
+    head = fetch.Node(data="first", next=tail)
 
-    assert head.chunk_id == 1 and head.data == "first"
+    assert head.data == "first"
     assert head.next is tail and tail.next is None
 
 
@@ -599,7 +586,7 @@ def test_download_chunk_asks_for_the_byte_range(granicus, payload):
     data = payload(1000)
     server = granicus(data)
 
-    content = fetch.download_chunk(server.url, 100, 199, 1, 1, verbose=False)
+    content = fetch.download_chunk(server.url, 100, 199)
 
     assert content == data[100:200]
     assert server.ranges == [(100, 199)]
@@ -609,7 +596,7 @@ def test_download_segment_fetches_the_whole_thing(granicus):
     server = granicus(b"", segment_bodies={"/media_0.ts": b"SEGMENT"})
 
     assert fetch.download_segment(
-        f"{server.origin}/media_0.ts", 1, 1, verbose=False) == b"SEGMENT"
+        f"{server.origin}/media_0.ts") == b"SEGMENT"
 
 
 def test_download_range_writes_the_selected_segments(
@@ -695,23 +682,6 @@ def test_every_function_is_exercised_somewhere():
     untested = [n for n in names
                 if not re.search(rf'\bfetch\.{re.escape(n)}\b', tests)]
     assert untested == [], f"no test refers to: {', '.join(untested)}"
-
-
-def test_log_prints_plainly_when_no_bar_is_active(capsys):
-    fetch._log("a line")
-
-    assert "a line" in capsys.readouterr().out
-
-
-def test_log_goes_through_the_bar_when_one_is_active():
-    from tqdm import tqdm
-    sink = FakeTTY()
-    bar = tqdm(total=1, file=sink, disable=None)
-
-    fetch._log("a line", bar)
-    bar.close()
-
-    assert "a line" in sink.getvalue()
 
 
 def test_terminal_width_always_answers():
@@ -844,8 +814,8 @@ def test_a_cancelled_segment_yields_no_bytes(granicus):
     cancelled.set()
 
     with pytest.raises(concurrent.futures.CancelledError):
-        fetch.download_segment(f"{server.origin}/media_0.ts", 1, 1,
-                               verbose=False, cancelled=cancelled)
+        fetch.download_segment(f"{server.origin}/media_0.ts",
+                               cancelled=cancelled)
 
 
 def test_interrupt_stops_a_chapter_download_promptly(tmp_path, granicus):

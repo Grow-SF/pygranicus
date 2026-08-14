@@ -20,7 +20,7 @@ without one the clip id is used instead. The older `MediaPlayer.php?clip_id=…`
 work too, as does a direct media URL:
 
 ```sh
-uv run pygranicus "https://archive-video.granicus.com/video/file/here.mp4" --verbose
+uv run pygranicus "https://archive-video.granicus.com/video/file/here.mp4"
 ```
 
 Use `-o` to choose the filename yourself.
@@ -80,7 +80,7 @@ To install it as a persistent command on your PATH:
 
 ```sh
 uv tool install git+https://github.com/Grow-SF/pygranicus
-pygranicus "https://archive-video.granicus.com/video/file/here.mp4" --verbose
+pygranicus "https://archive-video.granicus.com/video/file/here.mp4"
 ```
 
 ## Options
@@ -90,7 +90,6 @@ pygranicus "https://archive-video.granicus.com/video/file/here.mp4" --verbose
 | `-c`, `--chunk_size` | Size of each chunk to download, in bytes. Defaults to 32 MiB. |
 | `-o`, `--output_file` | Output filename. Defaults to the last part of the url path. |
 | `-t`, `--num_threads` | Number of threads to use for downloading. Defaults to the CPU count. |
-| `-v`, `--verbose` | Print chunk progress and per-chunk download speed. |
 | `--no-progress` | Disable the progress bar. The bar is shown by default when stderr is a terminal, and silences itself automatically when output is piped or redirected. |
 
 # Development
