@@ -83,7 +83,7 @@ def download_video(url, chunk_size, num_threads, output_file, verbose=False):
                 head = head.next
 
 
-if __name__ == '__main__':
+def main():
     parser = argparse.ArgumentParser(
         description='Download video file from url in parallel')
     parser.add_argument(
@@ -107,3 +107,7 @@ if __name__ == '__main__':
     num_threads = args.num_threads
     verbose = args.verbose
     download_video(url, chunk_size, num_threads, output_file, verbose)
+
+
+if __name__ == '__main__':
+    main()
