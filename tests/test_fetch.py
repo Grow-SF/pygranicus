@@ -1,5 +1,10 @@
+import ast
 import io
 import os
+import pathlib
+import re
+import shutil
+import subprocess
 import signal
 import sys
 import threading
@@ -535,3 +540,164 @@ def test_meeting_size_gives_up_quietly_when_it_cannot_measure():
     # Estimating is a nicety; failing to must not stop anything.
     assert fetch.meeting_size("http://127.0.0.1:9/video.mp4",
                               playlist="#EXTINF:2.0,\na.ts\n") == (None, None)
+
+
+def test_safe_filename_strips_what_a_filesystem_rejects():
+    assert fetch._safe_filename('a/b:c*d?e"f<g>h|i') == "abcdefghi"
+    assert fetch._safe_filename("Budget &amp; Finance") == "Budget & Finance"
+    assert fetch._safe_filename("  spaced   out  ") == "spaced out"
+
+
+def test_is_media_url_distinguishes_a_file_from_a_page():
+    assert fetch.is_media_url("https://host/sf/clip.mp4")
+    assert not fetch.is_media_url("https://host/player/clip/42000?view_id=13")
+
+
+def test_fetch_page_returns_the_body(granicus):
+    server = granicus(b"<html>hello</html>")
+
+    assert fetch.fetch_page(
+        f"{server.origin}/anything") == "<html>hello</html>"
+
+
+def test_fetch_page_raises_on_a_bad_page(granicus):
+    server = granicus(b"", blocked_ua_prefixes=("Mozilla",),
+                      blocked_methods=("GET",))
+
+    with pytest.raises(requests.HTTPError):
+        fetch.fetch_page(f"{server.origin}/gone")
+
+
+def test_fetch_playlist_reads_the_chunklist(granicus, monkeypatch):
+    server = granicus(b"", segment_bodies={"/chunklist.m3u8": CHUNKLIST})
+    monkeypatch.setattr(fetch, "chunklist_url",
+                        lambda url: f"{server.origin}/chunklist.m3u8")
+
+    assert "media_0.ts" in fetch.fetch_playlist("https://host/sf/clip.mp4")
+
+
+def test_node_links_to_the_next_one():
+    tail = fetch.Node(2)
+    head = fetch.Node(1, data="first", next=tail)
+
+    assert head.chunk_id == 1 and head.data == "first"
+    assert head.next is tail and tail.next is None
+
+
+def test_download_chunk_asks_for_the_byte_range(granicus, payload):
+    data = payload(1000)
+    server = granicus(data)
+
+    content = fetch.download_chunk(server.url, 100, 199, 1, 1, verbose=False)
+
+    assert content == data[100:200]
+    assert server.ranges == [(100, 199)]
+
+
+def test_download_segment_fetches_the_whole_thing(granicus):
+    server = granicus(b"", segment_bodies={"/media_0.ts": b"SEGMENT"})
+
+    assert fetch.download_segment(
+        f"{server.origin}/media_0.ts", 1, 1, verbose=False) == b"SEGMENT"
+
+
+def test_download_range_writes_the_selected_segments(
+        tmp_path, granicus, monkeypatch):
+    server = granicus(b"", segment_bodies={
+        "/chunklist.m3u8": CHUNKLIST,
+        "/media_0.ts": b"AAAA", "/media_1.ts": b"BBBB",
+        "/media_2.ts": b"CCCC", "/media_3.ts": b"DDDD", "/media_4.ts": b"EEEE"})
+    monkeypatch.setattr(fetch, "chunklist_url",
+                        lambda url: f"{server.origin}/chunklist.m3u8")
+    out = tmp_path / "clip.ts"
+
+    written = fetch.download_range("https://host/sf/clip.mp4", 4, 8, 2,
+                                   str(out))
+
+    assert written == str(out)
+    assert out.read_bytes() == b"CCCCDDDD"
+
+
+def test_remux_declines_when_ffmpeg_is_missing(tmp_path, monkeypatch):
+    monkeypatch.setattr(fetch.shutil, "which", lambda name: None)
+
+    assert fetch.remux_to_mp4(str(tmp_path / "a.ts"),
+                              str(tmp_path / "a.mp4")) is False
+
+
+@pytest.mark.skipif(shutil.which("ffmpeg") is None, reason="needs ffmpeg")
+def test_remux_rewraps_a_stream_as_mp4(tmp_path):
+    source = tmp_path / "clip.ts"
+    subprocess.run(
+        ["ffmpeg", "-v", "error", "-f", "lavfi", "-i", "testsrc=d=1:s=64x64",
+         "-c:v", "libx264", "-y", str(source)], check=True)
+    destination = tmp_path / "clip.mp4"
+
+    assert fetch.remux_to_mp4(str(source), str(destination)) is True
+    assert destination.stat().st_size > 0
+
+
+def test_choose_chapters_returns_the_ticked_rows(monkeypatch):
+    import questionary
+    seen = {}
+
+    class Prompt:
+        def ask(self):
+            return [1]
+
+    def fake_checkbox(message, choices):
+        seen["titles"] = [choice.title for choice in choices]
+        return Prompt()
+
+    monkeypatch.setattr(questionary, "checkbox", fake_checkbox)
+    rows = [(0, 60, 1024 * 1024, "opening"), (60, 30, 512 * 1024, "the item")]
+
+    assert fetch.choose_chapters(rows) == [1]
+    assert "opening" in seen["titles"][0]
+    assert "1m00s" in seen["titles"][0]
+
+
+def test_choose_chapters_treats_a_cancelled_prompt_as_nothing(monkeypatch):
+    import questionary
+
+    class Prompt:
+        def ask(self):
+            return None
+
+    monkeypatch.setattr(questionary, "checkbox",
+                        lambda message, choices: Prompt())
+
+    assert fetch.choose_chapters([(0, 10, 100, "x")]) == []
+
+
+def test_every_function_is_exercised_somewhere():
+    """The suite lost track of meeting_size once; it must not happen again."""
+    import ast
+    source = pathlib.Path(fetch.__file__).read_text()
+    names = []
+    for node in ast.parse(source).body:
+        if isinstance(node, ast.FunctionDef):
+            names.append(node.name)
+        elif isinstance(node, ast.ClassDef):
+            names.append(node.name)
+    tests = pathlib.Path(__file__).read_text()
+    untested = [n for n in names
+                if not re.search(rf'\bfetch\.{re.escape(n)}\b', tests)]
+    assert untested == [], f"no test refers to: {', '.join(untested)}"
+
+
+def test_log_prints_plainly_when_no_bar_is_active(capsys):
+    fetch._log("a line")
+
+    assert "a line" in capsys.readouterr().out
+
+
+def test_log_goes_through_the_bar_when_one_is_active():
+    from tqdm import tqdm
+    sink = FakeTTY()
+    bar = tqdm(total=1, file=sink, disable=None)
+
+    fetch._log("a line", bar)
+    bar.close()
+
+    assert "a line" in sink.getvalue()
