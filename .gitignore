@@ -127,3 +127,10 @@ dmypy.json
 
 # Pyre type checker
 .pyre/
+
+# Downloads. The tool writes .mp4, and .ts when ffmpeg is not on hand to
+# rewrap a range or a chapter. Note that *.ts would also match TypeScript;
+# this project has none, but a future one here would need an exception.
+*.mp4
+*.mp3
+*.ts
