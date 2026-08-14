@@ -489,3 +489,34 @@ def test_chapter_filenames_stay_within_a_sane_length():
     name = fetch.chapter_filename("meeting.mp4", "x" * 400)
 
     assert len(name.encode()) < 255
+
+
+def test_chapter_rows_measure_each_item():
+    rows = fetch.chapter_rows(
+        [(0, "one"), (60, "two"), (100, "three")],
+        total_seconds=200, total_bytes=200 * 1000)
+
+    # (start, duration, estimated bytes, title)
+    assert rows[0] == (0, 60, 60 * 1000, "one")
+    assert rows[1] == (60, 40, 40 * 1000, "two")
+
+
+def test_the_last_chapter_is_measured_to_the_end_of_the_meeting():
+    rows = fetch.chapter_rows(
+        [(0, "one"), (60, "two")], total_seconds=200, total_bytes=200 * 1000)
+
+    assert rows[-1] == (60, 140, 140 * 1000, "two")
+
+
+def test_chapter_rows_survive_an_unknown_duration():
+    rows = fetch.chapter_rows(
+        [(0, "one"), (60, "two")], total_seconds=None, total_bytes=None)
+
+    assert rows[0][1] == 60 and rows[0][2] is None
+    assert rows[-1][1] is None and rows[-1][2] is None
+
+
+def test_spans_read_as_minutes_and_seconds():
+    assert fetch.format_span(95) == "1m35s"
+    assert fetch.format_span(3725) == "1h02m05s"
+    assert fetch.format_span(None) == "?"

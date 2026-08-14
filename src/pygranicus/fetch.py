@@ -86,6 +86,38 @@ def parse_chapters(page):
     return sorted(chapters)
 
 
+def format_span(seconds):
+    """A compact duration: 1m35s, 1h02m05s, or ? when it is not known."""
+    if seconds is None:
+        return '?'
+    hours, rest = divmod(int(seconds), 3600)
+    minutes, rest = divmod(rest, 60)
+    if hours:
+        return f'{hours}h{minutes:02d}m{rest:02d}s'
+    return f'{minutes}m{rest:02d}s'
+
+
+def chapter_rows(chapters, total_seconds, total_bytes):
+    """Measure each chapter: (start, duration, estimated bytes, title).
+
+    The size is the meeting's average rate over the chapter's length. Rate
+    varies with what is on screen, so it is an estimate, not a promise. When
+    the meeting's length is unknown the last chapter cannot be measured.
+    """
+    rate = (total_bytes / total_seconds
+            if total_bytes and total_seconds else None)
+    rows = []
+    for i, (start, title) in enumerate(chapters):
+        if i + 1 < len(chapters):
+            end = chapters[i + 1][0]
+        else:
+            end = total_seconds
+        seconds = None if end is None else max(0, end - start)
+        size = None if (seconds is None or rate is None) else seconds * rate
+        rows.append((start, seconds, size, title))
+    return rows
+
+
 def chapter_ranges(chapters):
     """Pair each chapter with where it ends: the next one's start.
 
@@ -118,13 +150,38 @@ def chapters_for(page_url):
     return parse_chapters(response.text)
 
 
-def choose_chapters(chapters):
+def meeting_size(video_url):
+    """Return (seconds, bytes) for the whole meeting, or (None, None).
+
+    Used only to measure chapters, so a failure costs the estimate rather
+    than the download.
+    """
+    try:
+        head = requests.head(video_url, headers={"User-Agent": USER_AGENT},
+                             timeout=LISTING_TIMEOUT)
+        head.raise_for_status()
+        total_bytes = int(head.headers["Content-Length"])
+        playlist = requests.get(chunklist_url(video_url),
+                                headers={"User-Agent": USER_AGENT},
+                                timeout=PLAYLIST_TIMEOUT)
+        playlist.raise_for_status()
+        seconds = sum(float(x)
+                      for x in SEGMENT_DURATION_RE.findall(playlist.text))
+    except (requests.RequestException, KeyError, ValueError):
+        return None, None
+    return (seconds or None), total_bytes
+
+
+def choose_chapters(rows):
     """Ask which chapters to download. Nothing is selected to begin with."""
     import questionary
-    choices = [
-        questionary.Choice(
-            title=f'{range_suffix(start, None)[:-4]}  {title}', value=index)
-        for index, (start, title) in enumerate(chapters)]
+    choices = []
+    for index, (start, seconds, size, title) in enumerate(rows):
+        estimate = f'~{tqdm.format_sizeof(size, "B", 1024)}' if size else '?'
+        choices.append(questionary.Choice(
+            title=(f'{range_suffix(start, None)[:-4]}  '
+                   f'{format_span(seconds):>8}  {estimate:>9}  {title}'),
+            value=index))
     picked = questionary.checkbox(
         'Select chapters to download', choices=choices).ask()
     return picked or []
@@ -503,7 +560,9 @@ def main():
         chapters = chapters_for(args.url)
         if not chapters:
             raise SystemExit(f"{args.url} lists no agenda items")
-        picked = choose_chapters(chapters)
+        total_seconds, total_bytes = meeting_size(url)
+        rows = chapter_rows(chapters, total_seconds, total_bytes)
+        picked = choose_chapters(rows)
         if not picked:
             raise SystemExit("Nothing selected; nothing downloaded")
         ranges = chapter_ranges(chapters)

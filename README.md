@@ -36,11 +36,16 @@ uv run pygranicus "https://sanfrancisco.granicus.com/player/clip/42000?view_id=1
 
 ```
 ? Select chapters to download  (space to toggle, enter to confirm)
-  ○ 0:00:14  11 ROLL CALL AND ANNOUNCEMENTS
-  ○ 0:06:15  220848 Appointment, Treasury Oversight Committee
-❯ ◉ 0:07:50  220946 Appointment, Children, Youth and Their Families
-  ○ 0:11:22  220427 Administrative Code - County Veterans Service Officer
+  ○ 0h00m14s     6m01s    ~92.1MB  11 ROLL CALL AND ANNOUNCEMENTS
+  ○ 0h06m15s     1m35s    ~24.2MB  220848 Appointment, Treasury Oversight
+❯ ◉ 0h07m50s     3m32s    ~54.1MB  220946 Appointment, Children and Youth
+  ○ 0h11m22s    14m39s     ~224MB  220427 Administrative Code - Veterans
 ```
+
+Each item shows when it starts, how long it runs, and roughly how much it will
+cost to download. The size is the meeting's average rate over the item's
+length, so it is an estimate rather than a promise — measured within a few
+percent in practice.
 
 Nothing is selected to begin with, so you opt in to each item and an accidental
 return downloads nothing. Each item you tick is saved as its own file, named
